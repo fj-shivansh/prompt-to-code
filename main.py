@@ -67,20 +67,79 @@ class DatabaseManager:
 
 class GeminiClient:
     def __init__(self, api_key: Optional[str] = None):
-        if api_key:
-            genai.configure(api_key=api_key)
-        else:
-            # Try to get from environment
-            api_key = os.getenv('GEMINI_API_KEY')
-            if not api_key:
-                raise ValueError("Gemini API key not provided")
-            genai.configure(api_key=api_key)
+        self.api_keys = []
+        self.current_key_index = 0
         
+        if api_key:
+            self.api_keys = [api_key]
+        else:
+            # Try to get from environment - support both single and multiple keys
+            single_key = os.getenv('GEMINI_API_KEY')
+            multiple_keys = os.getenv('GEMINI_API_KEYS')
+            
+            if multiple_keys:
+                # Parse comma-separated keys, strip whitespace
+                self.api_keys = [key.strip() for key in multiple_keys.split(',') if key.strip()]
+            elif single_key:
+                self.api_keys = [single_key]
+            else:
+                raise ValueError("No Gemini API keys provided. Set GEMINI_API_KEY or GEMINI_API_KEYS environment variable")
+        
+        if not self.api_keys:
+            raise ValueError("No valid API keys found")
+        
+        # Configure with the first API key
+        genai.configure(api_key=self.api_keys[0])
         self.model = genai.GenerativeModel('gemini-1.5-flash')
+        print(f"Initialized GeminiClient with {len(self.api_keys)} API key(s)")
     
-    def generate_code(self, task: str) -> CodeGeneration:
-        """Generate code for a given task using Gemini API"""
-        prompt = f"""You have access to a SQLite database file called "historical_data.db" with stock market data. The database has a table called "stock_data" with columns:
+    def _rotate_api_key(self):
+        """Rotate to the next API key in round-robin fashion"""
+        if len(self.api_keys) > 1:
+            self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+            current_key = self.api_keys[self.current_key_index]
+            genai.configure(api_key=current_key)
+            print(f"Rotated to API key {self.current_key_index + 1}/{len(self.api_keys)}")
+    
+    def _get_current_api_key_info(self) -> str:
+        """Get info about current API key for debugging"""
+        return f"Using API key {self.current_key_index + 1}/{len(self.api_keys)}"
+    
+    def generate_code(self, task: str, error_context: Optional[str] = None, failed_code: Optional[str] = None) -> CodeGeneration:
+        """Generate code for a given task using Gemini API with round-robin key rotation"""
+        
+        print(f"Generating code - {self._get_current_api_key_info()}")
+        
+        # Add error context if this is a retry attempt
+        error_section = ""
+        if error_context and failed_code:
+            error_section = f"""
+ERROR CONTEXT FOR CODE FIXING:
+ORIGINAL TASK: {task}
+
+The following code failed with this error:
+ERROR: {error_context}
+
+FAILED CODE:
+{failed_code}
+
+Please analyze the error and fix the code. Common issues to check:
+1. **INDENTATION ERRORS**: Check for extra spaces, mixed tabs/spaces, inconsistent indentation
+2. **PANDAS GROUPBY ISSUES**: When using groupby.apply(), columns created in one apply() may not be available in subsequent apply() calls on the same grouped object
+3. Variable naming conflicts or undefined variables
+4. Data type mismatches or conversion errors
+5. Missing imports or incorrect library usage
+6. Database connection or query issues
+7. File path or permission problems
+8. Pandas operations on empty DataFrames
+9. Syntax errors like missing colons, parentheses, or quotes
+10. **DATAFRAME COLUMN ACCESS**: Make sure columns exist before accessing them, especially after groupby operations
+
+IMPORTANT: You must complete the ORIGINAL TASK above. Focus on the task requirements while fixing the technical error.
+
+"""
+
+        prompt = f"""{error_section}You have access to a SQLite database file called "historical_data.db" with stock market data. The database has a table called "stock_data" with columns:
 Date: string, format "YYYY-MM-DD HH:MM:SS"
 Ticker: string, stock symbol like "AAPL"
 Adj_Close: float, adjusted closing price
@@ -92,22 +151,31 @@ IMPORTANT:
 4. Do not use any type hints in function signatures
 5. If your solution requires external libraries (like pandas, numpy, matplotlib, etc.), please list all required packages in a "requirements" field. DO NOT include built-in modules like sqlite3, os, sys, time, json, etc.
 6. Write production-ready code that handles edge cases and includes proper error handling
-7. The code should print the final result at the end and only once.
-8. If using pandas DataFrames for output, YOU MUST configure pandas display options to show ALL rows by adding this line BEFORE printing: pd.set_option('display.max_rows', None)
-9. Filter out NULL Adj_Close values when querying the database
-10. When calculating rolling metrics (moving averages, drawdowns, correlations, etc.), if the task specifies x days, 
+7. **CSV OUTPUT REQUIREMENT**: The final result MUST be saved as a CSV file named 'output.csv'. Use pandas to_csv() method or manual CSV writing. DO NOT print tabulate output.
+8. MANDATORY: For DataFrame results, save to CSV like this: df.to_csv('output.csv', index=False). For non-DataFrame results, convert to DataFrame first then save as CSV.
+9. If using pandas DataFrames for processing, YOU MUST configure pandas display options: pd.set_option('display.max_rows', None)
+10. Filter out NULL Adj_Close values when querying the database
+11. When calculating rolling metrics (moving averages, drawdowns, correlations, etc.), if the task specifies x days, 
 interpret it as "today plus the previous (x-1) datapoints." If fewer than (x-1) datapoints exist 
 (e.g., at the start of the series), then calculate using all available rows instead of skipping.
-11. By default, perform the calculation for all tickers. Only restrict to a specific ticker if it is explicitly mentioned in the task.
-12. pd.set_option('display.max_rows', None) IS MANDATORY TO BE USED IF USING PANDAS
+12. By default, perform the calculation for all tickers. Only restrict to a specific ticker if it is explicitly mentioned in the task.
+13. pd.set_option('display.max_rows', None) IS MANDATORY TO BE USED IF USING PANDAS
+14. **VARIABLE DEFINITIONS**: Always define all variables before using them. If a function needs parameters like 'window', make sure to define them or pass them as arguments. Avoid using undefined variables.
+15. **INDENTATION**: Use consistent 4-space indentation throughout. NO TABS. ALL lines at the same level must have identical indentation. Check for extra spaces before code lines.
+16. **DATE SORTING - MANDATORY**: When working with date-based data, you MUST ALWAYS sort the FINAL OUTPUT by Date in descending order (latest date first) unless explicitly specified otherwise. This applies to:
+   - SQL queries: Use ORDER BY Date DESC 
+   - Pandas DataFrames: Use df.sort_values('Date', ascending=False)
+   - Final CSV output: ALWAYS sort by Date DESC before saving to CSV
+   - Even if the task asks for "top N" or "highest/lowest" values, the final result should still be sorted by Date DESC
 EXAMPLE Task: Write code that calculates the highest adjusted close price for AAPL ticker.
 
 EXAMPLE Expected response (JSON):
 {{
-    "code": "#!/usr/bin/env python3\\nimport sqlite3\\n\\n# Connect to database and load data\\nconn = sqlite3.connect('historical_data.db')\\ncursor = conn.cursor()\\ncursor.execute('SELECT Date, Ticker, Adj_Close FROM stock_data WHERE Adj_Close IS NOT NULL')\\nrows = cursor.fetchall()\\nconn.close()\\n\\n# Convert to list of dictionaries\\ndata = [\\n    {{'Date': row[0], 'Ticker': row[1], 'Adj_Close': row[2]}}\\n    for row in rows\\n]\\n\\ndef highest_adj_close(data, ticker):\\n    prices = [row['Adj_Close'] for row in data if row['Ticker'] == ticker]\\n    if not prices:\\n        return 0.0\\n    return max(prices)\\n\\n# Execute the task\\nresult = highest_adj_close(data, 'AAPL')\\nprint(f'Highest adjusted close price for AAPL: {{result}}')\\nprint(result)",
-    "explanation": "The code connects to the SQLite database, loads all stock data, converts it to a list of dictionaries, defines a function to find the highest adjusted close price for a given ticker, executes it for AAPL, and prints the result.",
-    "requirements": []
+    "code": "#!/usr/bin/env python3\\nimport sqlite3\\nimport pandas as pd\\n\\n# Set pandas display options\\npd.set_option('display.max_rows', None)\\n\\n# Connect to database and load data (sorted by date descending - latest first)\\nconn = sqlite3.connect('historical_data.db')\\ncursor = conn.cursor()\\ncursor.execute('SELECT Date, Ticker, Adj_Close FROM stock_data WHERE Adj_Close IS NOT NULL ORDER BY Date DESC')\\nrows = cursor.fetchall()\\nconn.close()\\n\\n# Convert to DataFrame\\ndf = pd.DataFrame(rows, columns=['Date', 'Ticker', 'Adj_Close'])\\n\\n# Filter for AAPL and find highest adjusted close price\\naapl_data = df[df['Ticker'] == 'AAPL']\\nhighest_price = aapl_data['Adj_Close'].max() if not aapl_data.empty else 0.0\\ntotal_records = len(aapl_data)\\n\\n# Create result DataFrame\\nresult_data = [\\n    ['Ticker', 'AAPL'],\\n    ['Highest Adjusted Close Price', f'${{highest_price:.2f}}'],\\n    ['Total Records Analyzed', total_records]\\n]\\n\\nresult_df = pd.DataFrame(result_data, columns=['Metric', 'Value'])\\nresult_df.to_csv('output.csv', index=False)\\nprint('Results saved to output.csv')",
+    "explanation": "The code connects to the SQLite database, loads all stock data sorted by date (latest first), calculates the highest adjusted close price for AAPL, and saves the result as a CSV file with proper date sorting.",
+    "requirements": ["pandas"]
 }}
+
 
 TASK: {task}
 
@@ -117,25 +185,54 @@ Expected response format (JSON):
     "explanation": "your step-by-step explanation here as a string",
     "requirements": ["list", "of", "required", "packages", "if", "any"]
 }}"""
-        response = self.model.generate_content(prompt)
+        # Try generating with current API key, with retry logic for rate limiting
+        max_key_attempts = len(self.api_keys)
+        last_exception = None
         
-        try:
-            # Extract JSON from response
-            response_text = response.text.strip()
-            if response_text.startswith('```json'):
-                response_text = response_text[7:-3].strip()
-            elif response_text.startswith('```'):
-                response_text = response_text[3:-3].strip()
-            
-            parsed = json.loads(response_text)
-            return CodeGeneration(
-                code=parsed['code'],
-                explanation=parsed['explanation'],
-                task=task,
-                requirements=parsed.get('requirements', [])
-            )
-        except (json.JSONDecodeError, KeyError) as e:
-            raise ValueError(f"Failed to parse Gemini response: {e}")
+        for attempt in range(max_key_attempts):
+            try:
+                response = self.model.generate_content(prompt)
+                
+                # Extract JSON from response
+                response_text = response.text.strip()
+                if response_text.startswith('```json'):
+                    response_text = response_text[7:-3].strip()
+                elif response_text.startswith('```'):
+                    response_text = response_text[3:-3].strip()
+                
+                parsed = json.loads(response_text)
+                
+                # Successful generation - rotate to next key for next request
+                self._rotate_api_key()
+                
+                return CodeGeneration(
+                    code=parsed['code'],
+                    explanation=parsed['explanation'],
+                    task=task,
+                    requirements=parsed.get('requirements', [])
+                )
+                
+            except Exception as e:
+                last_exception = e
+                error_message = str(e).lower()
+                
+                # Check if it's a rate limit or quota error
+                if any(keyword in error_message for keyword in ['quota', 'rate limit', 'resource exhausted', '429']):
+                    print(f"Rate limit hit on API key {self.current_key_index + 1}, trying next key...")
+                    self._rotate_api_key()
+                    continue
+                
+                # For JSON parsing errors, don't rotate key - it's not a quota issue
+                if isinstance(e, (json.JSONDecodeError, KeyError)):
+                    raise ValueError(f"Failed to parse Gemini response: {e}")
+                
+                # For other errors, try next key
+                print(f"Error with API key {self.current_key_index + 1}: {e}")
+                self._rotate_api_key()
+                continue
+        
+        # All keys exhausted
+        raise ValueError(f"All API keys exhausted. Last error: {last_exception}")
 
 
 class CodeExecutor:
@@ -201,6 +298,11 @@ This file contains AI-generated code for execution.
                 print(f"STDOUT length: {len(result.stdout)}")
                 print(f"STDOUT content (first 500 chars): {result.stdout[:500]}")
                 print(f"STDOUT content (last 500 chars): {result.stdout[-500:]}")
+                
+                # Check if output.csv file was created
+                csv_file_path = "output.csv"
+                csv_exists = os.path.exists(csv_file_path)
+                print(f"CSV file exists: {csv_exists}")
                 
                 # Return the full output instead of just the last line
                 full_output = result.stdout.strip()
@@ -279,27 +381,12 @@ class PromptToCodeSystem:
         self.generations = []
         self.test_results = []
     
-    def process_task(self, task: str) -> Dict[str, Any]:
-        """Process a complete task: generate code, test it, and return analytics"""
+    def process_task(self, task: str, max_retries: int = 5) -> Dict[str, Any]:
+        """Process a complete task with retry mechanism for failed code execution"""
         
         print(f"Processing task: {task}")
         
-        # Generate code
-        print("Generating code with Gemini API...")
-        try:
-            generation = self.gemini_client.generate_code(task)
-            self.generations.append(generation)
-            print(f"Generated code:\n{generation.code}")
-            print(f"Explanation: {generation.explanation}")
-            if generation.requirements:
-                print(f"Requirements: {', '.join(generation.requirements)}")
-                # Install requirements
-                if not self.code_executor.install_requirements(generation.requirements):
-                    return {"error": "Failed to install required packages"}
-        except Exception as e:
-            return {"error": f"Code generation failed: {str(e)}"}
-        
-        # Load data
+        # Load data for analytics
         print("Loading test data...")
         data = self.db_manager.get_all_data()
         data_stats = {
@@ -311,16 +398,62 @@ class PromptToCodeSystem:
             }
         }
         
-        # Execute and test code
-        print("Executing generated code...")
-        test_result = self.code_executor.execute_code(generation.code)
-        self.test_results.append(test_result)
+        generation = None
+        test_result = None
+        attempt = 0
+        error_context = None
+        failed_code = None
         
-        if test_result.success:
-            print(f"Execution successful! Result: {test_result.result}")
-            print(f"Execution time: {test_result.execution_time:.4f} seconds")
-        else:
-            print(f"Execution failed: {test_result.error}")
+        while attempt < max_retries:
+            attempt += 1
+            print(f"\n=== Attempt {attempt}/{max_retries} ===")
+            
+            # Generate code (with error context if retry)
+            print("Generating code with Gemini API...")
+            try:
+                if attempt == 1:
+                    generation = self.gemini_client.generate_code(task)
+                else:
+                    print(f"Retrying with error context: {error_context[:200]}...")
+                    generation = self.gemini_client.generate_code(task, error_context, failed_code)
+                
+                self.generations.append(generation)
+                print(f"Generated code:\n{generation.code}")
+                print(f"Explanation: {generation.explanation}")
+                
+                if generation.requirements:
+                    print(f"Requirements: {', '.join(generation.requirements)}")
+                    # Install requirements
+                    if not self.code_executor.install_requirements(generation.requirements):
+                        error_context = "Failed to install required packages"
+                        failed_code = generation.code
+                        continue
+                        
+            except Exception as e:
+                error_context = f"Code generation failed: {str(e)}"
+                if attempt == max_retries:
+                    return {"error": error_context}
+                continue
+            
+            # Execute and test code
+            print("Executing generated code...")
+            test_result = self.code_executor.execute_code(generation.code)
+            self.test_results.append(test_result)
+            
+            if test_result.success:
+                print(f"Execution successful! Result: {test_result.result}")
+                print(f"Execution time: {test_result.execution_time:.4f} seconds")
+                break  # Success - exit retry loop
+            else:
+                print(f"Execution failed: {test_result.error}")
+                error_context = test_result.error
+                failed_code = generation.code
+                
+                if attempt == max_retries:
+                    print(f"Max retries ({max_retries}) reached. Final error: {test_result.error}")
+                    break
+                else:
+                    print(f"Retrying... ({max_retries - attempt} attempts remaining)")
         
         # Generate analytics
         analytics = Analytics.analyze_results([generation], [test_result], data_stats)
@@ -331,7 +464,9 @@ class PromptToCodeSystem:
             "has_requirements": bool(generation.requirements),
             "requirements_count": len(generation.requirements) if generation.requirements else 0,
             "requirements_list": generation.requirements if generation.requirements else [],
-            "executed_in_separate_file": True
+            "executed_in_separate_file": True,
+            "retry_attempts": attempt,
+            "max_retries": max_retries
         }
         
         return {
@@ -389,4 +524,4 @@ if __name__ == "__main__":
         system.run_interactive_mode()
     except ValueError as e:
         print(f"Setup error: {e}")
-        print("Please set GEMINI_API_KEY environment variable or provide API key")
+        print("Please set GEMINI_API_KEY (single key) or GEMINI_API_KEYS (comma-separated multiple keys) environment variable")

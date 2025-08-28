@@ -8,51 +8,51 @@ This file contains AI-generated code for execution.
 import sqlite3
 import pandas as pd
 
+# Set pandas display options
+pd.set_option('display.max_rows', None)
+
 # Connect to the database
 conn = sqlite3.connect('historical_data.db')
 
-# Read data from the database
+# Fetch data from the database. Handle potential errors.
 try:
     df = pd.read_sql_query("SELECT Date, Ticker, Adj_Close FROM stock_data WHERE Adj_Close IS NOT NULL", conn)
-except pd.io.sql.DatabaseError as e:
-    print(f"Error reading data from database: {e}")
+except sqlite3.Error as e:
+    print(f"Error fetching data from database: {e}")
     exit(1)
+finally:
+    conn.close()
 
-conn.close()
-
-# Convert Date column to datetime
+# Convert 'Date' column to datetime
 df['Date'] = pd.to_datetime(df['Date'])
 
-# Set Date as index
-df = df.set_index('Date')
+# Sort the DataFrame by Date and Ticker
+df = df.sort_values(['Date', 'Ticker'])
 
-# Pivot the DataFrame to have Tickers as columns
-df = df.pivot(columns='Ticker', values='Adj_Close')
+# Create a pivot table to get opening and closing prices for each ticker on each day
+pivot_df = df.pivot_table(index='Date', columns='Ticker', values='Adj_Close')
 
-# Calculate daily returns
-daily_returns = df.pct_change()
-daily_returns = daily_returns.dropna()
+#Calculate daily percent change
+daily_pct_change = (pivot_df.diff().div(pivot_df.shift()) * 100).stack().reset_index(name='Daily Percent Change')
 
-# Calculate rolling 5-day correlation
-rolling_corr = daily_returns.rolling(5).corr()
+# Find minimum daily percent change for each day
+min_daily_pct_change = daily_pct_change.loc[daily_pct_change.groupby('Date')['Daily Percent Change'].idxmin()]
 
-# Prepare the output
-output_df = pd.DataFrame()
-output_df['Date'] = rolling_corr.index
+#Merge to get ticker
+min_daily_pct_change = min_daily_pct_change.merge(df, on=['Date', 'Ticker'], how='left')
 
-tickers = daily_returns.columns
+#Calculate subsequent day percent change
+min_daily_pct_change['next_day'] = min_daily_pct_change['Date'] + pd.Timedelta(days=1)
+min_daily_pct_change = min_daily_pct_change.merge(df, left_on=['next_day','Ticker'], right_on=['Date', 'Ticker'], how='left', suffixes=('_current','_next'))
+min_daily_pct_change['Subsequent Day Percent Change'] = ((min_daily_pct_change['Adj_Close_next'] - min_daily_pct_change['Adj_Close_current']) / min_daily_pct_change['Adj_Close_current']) * 100
+min_daily_pct_change = min_daily_pct_change[['Date_current','Ticker','Daily Percent Change','Subsequent Day Percent Change']]
+min_daily_pct_change = min_daily_pct_change.rename(columns={'Date_current':'Date'})
+min_daily_pct_change['Subsequent Day Percent Change'] = min_daily_pct_change['Subsequent Day Percent Change'].fillna(0)
 
-for i, ticker1 in enumerate(tickers):
-    for ticker2 in tickers[i+1:]:
-        corr_col_name = f"{ticker1}_{ticker2}_corr"
-        output_df[corr_col_name] = rolling_corr[ticker1][ticker2]
+#Sort by date in descending order
+min_daily_pct_change = min_daily_pct_change.sort_values('Date', ascending=False)
 
-#Handle cases with fewer than 5 days of data
-output_df = output_df.fillna(method='bfill')
+#Save to CSV
+min_daily_pct_change.to_csv('output.csv', index=False)
 
-# Set display options to show all rows
-pd.set_option('display.max_rows', None)
-
-# Print the result
-print(output_df)
-
+print('Results saved to output.csv')
