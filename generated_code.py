@@ -14,45 +14,55 @@ pd.set_option('display.max_rows', None)
 # Connect to the database
 conn = sqlite3.connect('historical_data.db')
 
-# Fetch data from the database. Handle potential errors.
-try:
-    df = pd.read_sql_query("SELECT Date, Ticker, Adj_Close FROM stock_data WHERE Adj_Close IS NOT NULL", conn)
-except sqlite3.Error as e:
-    print(f"Error fetching data from database: {e}")
-    exit(1)
-finally:
-    conn.close()
+# Query the database
+query = '''
+SELECT Date, Ticker, Adj_Close
+FROM stock_data
+WHERE Adj_Close IS NOT NULL
+ORDER BY Date ASC; 
+'''
+df = pd.read_sql_query(query, conn)
+conn.close()
 
-# Convert 'Date' column to datetime
+# Convert Date column to datetime
 df['Date'] = pd.to_datetime(df['Date'])
 
-# Sort the DataFrame by Date and Ticker
-df = df.sort_values(['Date', 'Ticker'])
+df = df.sort_values(by=['Date'])
 
-# Create a pivot table to get opening and closing prices for each ticker on each day
-pivot_df = df.pivot_table(index='Date', columns='Ticker', values='Adj_Close')
+# Group data by date and ticker
+groups = df.groupby(['Date', 'Ticker'])
 
-#Calculate daily percent change
-daily_pct_change = (pivot_df.diff().div(pivot_df.shift()) * 100).stack().reset_index(name='Daily Percent Change')
+# Calculate daily percentage change
+df['Open'] = groups['Adj_Close'].transform('first')
+df['Daily_Percent_Change'] = ((df['Adj_Close'] - df['Open']) / df['Open']) * 100
 
-# Find minimum daily percent change for each day
-min_daily_pct_change = daily_pct_change.loc[daily_pct_change.groupby('Date')['Daily Percent Change'].idxmin()]
+# Find the minimum percentage change for each day
+min_change_df = df.loc[df.groupby('Date')['Daily_Percent_Change'].idxmin()]
 
-#Merge to get ticker
-min_daily_pct_change = min_daily_pct_change.merge(df, on=['Date', 'Ticker'], how='left')
+# Create a copy to avoid SettingWithCopyWarning
+next_day_df = df.copy()
 
-#Calculate subsequent day percent change
-min_daily_pct_change['next_day'] = min_daily_pct_change['Date'] + pd.Timedelta(days=1)
-min_daily_pct_change = min_daily_pct_change.merge(df, left_on=['next_day','Ticker'], right_on=['Date', 'Ticker'], how='left', suffixes=('_current','_next'))
-min_daily_pct_change['Subsequent Day Percent Change'] = ((min_daily_pct_change['Adj_Close_next'] - min_daily_pct_change['Adj_Close_current']) / min_daily_pct_change['Adj_Close_current']) * 100
-min_daily_pct_change = min_daily_pct_change[['Date_current','Ticker','Daily Percent Change','Subsequent Day Percent Change']]
-min_daily_pct_change = min_daily_pct_change.rename(columns={'Date_current':'Date'})
-min_daily_pct_change['Subsequent Day Percent Change'] = min_daily_pct_change['Subsequent Day Percent Change'].fillna(0)
+# Shift data to get the next day's data
+next_day_df['Next_Day_Adj_Close'] = next_day_df.groupby('Ticker')['Adj_Close'].shift(-1)
+next_day_df['Next_Day_Date'] = next_day_df.groupby('Ticker')['Date'].shift(-1)
 
-#Sort by date in descending order
-min_daily_pct_change = min_daily_pct_change.sort_values('Date', ascending=False)
+# Merge to get the next day's data for the minimum change ticker
+min_change_df = min_change_df.merge(next_day_df[['Date', 'Ticker', 'Next_Day_Adj_Close', 'Next_Day_Date']], on=['Date', 'Ticker'], how='left', suffixes=('', '_next'))
 
-#Save to CSV
-min_daily_pct_change.to_csv('output.csv', index=False)
+# Calculate the subsequent day's percentage change
+min_change_df['Subsequent_Day_Percent_Change'] = ((min_change_df['Next_Day_Adj_Close'] - min_change_df['Adj_Close']) / min_change_df['Adj_Close']) * 100
+
+#Select required columns and rename for clarity
+result_df = min_change_df[['Date', 'Ticker', 'Daily_Percent_Change', 'Subsequent_Day_Percent_Change']]
+result_df = result_df.rename(columns={'Daily_Percent_Change': 'Min_Daily_Percent_Change'})
+
+#Handle potential NaN values. Fill with 0 for simplicity.  More sophisticated handling might be appropriate in a production environment.
+result_df = result_df.fillna(0)
+
+# Sort by date in descending order
+result_df = result_df.sort_values('Date', ascending=False)
+
+# Save to CSV
+result_df.to_csv('output.csv', index=False)
 
 print('Results saved to output.csv')

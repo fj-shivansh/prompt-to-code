@@ -167,7 +167,6 @@ interpret it as "today plus the previous (x-1) datapoints." If fewer than (x-1) 
    - Pandas DataFrames: Use df.sort_values('Date', ascending=False)
    - Final CSV output: ALWAYS sort by Date DESC before saving to CSV
    - Even if the task asks for "top N" or "highest/lowest" values, the final result should still be sorted by Date DESC
-EXAMPLE Task: Write code that calculates the highest adjusted close price for AAPL ticker.
 
 EXAMPLE Expected response (JSON):
 {{

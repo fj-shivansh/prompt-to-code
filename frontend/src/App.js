@@ -22,7 +22,7 @@ function App() {
   const [csvColumns, setCsvColumns] = useState([]);
   const [csvCurrentPage, setCsvCurrentPage] = useState(1);
   const [csvTotalPages, setCsvTotalPages] = useState(1);
-  const [csvSortConfig, setCsvSortConfig] = useState({ key: '', direction: 'asc' });
+  const [csvSortConfig, setCsvSortConfig] = useState({ key: '', direction: 'desc' });
   const [loadingCsv, setLoadingCsv] = useState(false);
   const [showPromptDetails, setShowPromptDetails] = useState(false);
 

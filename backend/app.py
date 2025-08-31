@@ -337,8 +337,9 @@ def get_csv_data():
         end_idx = start_idx + per_page
         paginated_df = df.iloc[start_idx:end_idx]
         
-        # Convert to list of dictionaries
-        data = paginated_df.to_dict('records')
+        # Convert to list of dictionaries and handle NaN values
+        import numpy as np
+        data = paginated_df.replace({np.nan: None}).to_dict('records')
         
         return jsonify({
             'data': data,
