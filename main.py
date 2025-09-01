@@ -380,6 +380,124 @@ class PromptToCodeSystem:
         self.generations = []
         self.test_results = []
     
+    def process_task_streaming(self, task: str, max_retries: int = 5, progress_callback=None):
+        """Process task with streaming progress updates"""
+        
+        if progress_callback:
+            progress_callback(f"data: {json.dumps({'type': 'task_start', 'message': 'Starting task processing...'})}\n\n")
+        
+        print(f"Processing task: {task}")
+        
+        # Load data for analytics
+        if progress_callback:
+            progress_callback(f"data: {json.dumps({'type': 'loading_data', 'message': 'Loading database...'})}\n\n")
+        
+        print("Loading test data...")
+        data = self.db_manager.get_all_data()
+        data_stats = {
+            "total_records": len(data),
+            "unique_tickers": len(set(d["Ticker"] for d in data)),
+            "date_range": {
+                "start": min(d["Date"] for d in data),
+                "end": max(d["Date"] for d in data)
+            }
+        }
+        
+        generation = None
+        test_result = None
+        attempt = 0
+        error_context = None
+        failed_code = None
+        
+        while attempt < max_retries:
+            attempt += 1
+            
+            if progress_callback:
+                progress_callback(f"data: {json.dumps({'type': 'retry', 'message': f'Execution Retry {attempt}', 'retry': attempt, 'max_retries': max_retries})}\n\n")
+            
+            print(f"\n=== Attempt {attempt}/{max_retries} ===")
+            
+            # Generate code (with error context if retry)
+            if progress_callback:
+                progress_callback(f"data: {json.dumps({'type': 'generating_code', 'message': f'Generating code (retry {attempt})...'})}\n\n")
+            
+            print("Generating code with Gemini API...")
+            try:
+                if attempt == 1:
+                    generation = self.gemini_client.generate_code(task)
+                else:
+                    print(f"Retrying with error context: {error_context[:200]}...")
+                    generation = self.gemini_client.generate_code(task, error_context, failed_code)
+                
+                self.generations.append(generation)
+                
+                if generation.requirements:
+                    print(f"Requirements: {', '.join(generation.requirements)}")
+                    if progress_callback:
+                        progress_callback(f"data: {json.dumps({'type': 'installing_deps', 'message': 'Installing dependencies...'})}\n\n")
+                    
+                    # Install requirements
+                    if not self.code_executor.install_requirements(generation.requirements):
+                        error_context = "Failed to install required packages"
+                        failed_code = generation.code
+                        if progress_callback:
+                            progress_callback(f"data: {json.dumps({'type': 'retry_failed', 'message': f'Retry {attempt} failed: dependency installation', 'retry': attempt})}\n\n")
+                        continue
+                        
+            except Exception as e:
+                error_context = f"Code generation failed: {str(e)}"
+                if progress_callback:
+                    progress_callback(f"data: {json.dumps({'type': 'retry_failed', 'message': f'Retry {attempt} failed: code generation error', 'retry': attempt})}\n\n")
+                if attempt == max_retries:
+                    return {"error": error_context}
+                continue
+            
+            # Execute and test code
+            if progress_callback:
+                progress_callback(f"data: {json.dumps({'type': 'executing', 'message': f'Executing code (retry {attempt})...'})}\n\n")
+            
+            print("Executing generated code...")
+            test_result = self.code_executor.execute_code(generation.code)
+            self.test_results.append(test_result)
+            
+            if test_result.success:
+                if progress_callback:
+                    progress_callback(f"data: {json.dumps({'type': 'retry_success', 'message': f'Retry {attempt} succeeded!', 'retry': attempt})}\n\n")
+                
+                print(f"Execution successful! Result: {test_result.result}")
+                print(f"Execution time: {test_result.execution_time:.4f} seconds")
+                break  # Success - exit retry loop
+            else:
+                if progress_callback:
+                    progress_callback(f"data: {json.dumps({'type': 'retry_failed', 'message': f'Retry {attempt} failed: execution error', 'retry': attempt})}\n\n")
+                
+                print(f"Execution failed: {test_result.error}")
+                error_context = test_result.error
+                failed_code = generation.code
+                
+                if attempt == max_retries:
+                    print(f"Max retries ({max_retries}) reached. Final error: {test_result.error}")
+                    break
+                else:
+                    print(f"Retrying... ({max_retries - attempt} attempts remaining)")
+        
+        # Generate analytics
+        analytics = Analytics.analyze_results([generation], [test_result], data_stats)
+        
+        # Add generation info to analytics
+        analytics["generation_info"] = {
+            "retry_attempts": attempt,
+            "max_retries": max_retries,
+            "code_length": len(generation.code) if generation else 0,
+            "requirements_count": len(generation.requirements) if generation and generation.requirements else 0
+        }
+        
+        return {
+            "generation": generation,
+            "test_result": test_result,
+            "analytics": analytics
+        }
+
     def process_task(self, task: str, max_retries: int = 5) -> Dict[str, Any]:
         """Process a complete task with retry mechanism for failed code execution"""
         

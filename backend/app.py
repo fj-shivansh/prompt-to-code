@@ -3,17 +3,24 @@
 Flask Backend API for Prompt-to-Code Testing System
 """
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, Response
 from flask_cors import CORS
+
 from dotenv import load_dotenv
 import sqlite3
 import json
 import os
 import sys
 import pandas as pd
+import numpy as np
+
 from werkzeug.serving import run_simple
 import google.generativeai as genai
 from typing import Optional
+import threading
+import time
+from collections import deque
+
 # Load environment variables from .env file
 load_dotenv('../.env')
 
@@ -85,6 +92,107 @@ except ValueError as e:
     db_manager = DatabaseManager(DB_PATH)
     prompt_refiner = None
 
+def generate_status_updates(original_prompt):
+    """Generator function for Server-Sent Events with detailed progress tracking"""
+    try:
+        yield f"data: {json.dumps({'type': 'init', 'message': 'Initializing...', 'progress': {'step': 1, 'total': 6}})}\n\n"
+        
+        if not system:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'System not initialized'})}\n\n"
+            return
+        
+        # Complete process with restart mechanism
+        max_complete_restarts = 2
+        complete_restart_attempt = 0
+        
+        while complete_restart_attempt <= max_complete_restarts:
+            complete_restart_attempt += 1
+            
+            yield f"data: {json.dumps({'type': 'attempt_start', 'message': f'Starting Complete Attempt {complete_restart_attempt}', 'attempt': complete_restart_attempt, 'max_attempts': max_complete_restarts + 1, 'progress': {'step': 2, 'total': 4}})}\n\n"
+            
+            # Process the prompt directly
+            yield f"data: {json.dumps({'type': 'generating', 'message': 'Generating and executing code...', 'progress': {'step': 3, 'total': 4}})}\n\n"
+            
+            original_cwd = os.getcwd()
+            os.chdir('..')
+            
+            # Process the actual task
+            result = system.process_task(original_prompt)
+            
+            os.chdir(original_cwd)
+            
+            # Get actual retry count from result
+            actual_retries = result['analytics']['generation_info']['retry_attempts'] if result and 'analytics' in result and 'generation_info' in result['analytics'] else 1
+            
+            # Show execution summary
+            yield f"data: {json.dumps({'type': 'execution_complete', 'message': f'Code execution completed ({actual_retries} retries used)', 'retry': actual_retries, 'max_retries': 5, 'attempt': complete_restart_attempt})}\n\n"
+            
+            # Show final attempt status
+            if result and 'error' not in result and result.get('test_result') and result['test_result'].success:
+                yield f"data: {json.dumps({'type': 'attempt_success', 'message': f'Complete Attempt {complete_restart_attempt} succeeded!', 'attempt': complete_restart_attempt, 'progress': {'step': 4, 'total': 4}})}\n\n"
+                
+                # Send final result
+                max_retries = result['analytics']['generation_info']['max_retries'] if 'analytics' in result and 'generation_info' in result['analytics'] else 5
+                
+                response = {
+                    'success': True,
+                    'original_prompt': original_prompt,
+                    'refined_prompt': original_prompt,
+                    'prompt_was_refined': False,
+                    'complete_restart_attempts': complete_restart_attempt,
+                    'max_complete_restarts': max_complete_restarts + 1,
+                    'execution_retry_attempts': actual_retries,
+                    'max_execution_retries': max_retries,
+                    'total_retries_used': (complete_restart_attempt - 1) * max_retries + actual_retries,
+                    'had_complete_restarts': complete_restart_attempt > 1,
+                    'code': result['generation'].code,
+                    'explanation': result['generation'].explanation,
+                    'requirements': result['generation'].requirements or [],
+                    'result': result['test_result'].result if result['test_result'].success else None,
+                    'execution_time': result['test_result'].execution_time,
+                    'success_rate': result['analytics']['summary']['success_rate'],
+                    'error': result['test_result'].error if not result['test_result'].success else None,
+                    'analytics': result['analytics']
+                }
+                
+                yield f"data: {json.dumps({'type': 'final_result', 'data': response})}\n\n"
+                break
+            else:
+                # This complete attempt failed
+                error_msg = result.get('error', 'Unknown error') if result else 'System error'
+                if result and result.get('test_result'):
+                    error_msg = result['test_result'].error
+                
+                yield f"data: {json.dumps({'type': 'retry_failed', 'message': f'All {actual_retries} retries failed', 'retry': actual_retries, 'attempt': complete_restart_attempt})}\n\n"
+                yield f"data: {json.dumps({'type': 'attempt_failed', 'message': f'Complete Attempt {complete_restart_attempt} failed after {actual_retries} retries', 'attempt': complete_restart_attempt, 'error': error_msg[:200]})}\n\n"
+                
+                if complete_restart_attempt <= max_complete_restarts:
+                    yield f"data: {json.dumps({'type': 'restarting', 'message': f'Restarting completely... ({max_complete_restarts + 1 - complete_restart_attempt} attempts remaining)', 'progress': {'step': 2, 'total': 4}})}\n\n"
+                    continue
+                else:
+                    max_retries = 5  # Default value for error calculation
+                    yield f"data: {json.dumps({'type': 'final_error', 'message': 'All complete attempts failed', 'total_attempts': complete_restart_attempt, 'total_retries': complete_restart_attempt * max_retries})}\n\n"
+                    break
+        
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'final_error', 'message': f'System error: {str(e)}'})}\n\n"
+
+@app.route('/api/process_prompt_stream', methods=['POST'])
+def process_prompt_stream():
+    """Server-Sent Events endpoint for real-time status updates"""
+    data = request.get_json()
+    original_prompt = data.get('prompt', '').strip()
+    
+    if not original_prompt:
+        return jsonify({'error': 'Prompt cannot be empty'}), 400
+    
+    def event_stream():
+        for update in generate_status_updates(original_prompt):
+            yield update
+    
+    return Response(event_stream(), mimetype='text/event-stream',
+                   headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'})
+
 @app.route('/api/process_prompt', methods=['POST'])
 def process_prompt():
     if not system:
@@ -108,24 +216,11 @@ def process_prompt():
             
             print(f"=== COMPLETE ATTEMPT {complete_restart_attempt}/{max_complete_restarts + 1} ===")
             
-            # Step 1: Refine the prompt if refiner is available
-            refined_prompt = original_prompt
-            if prompt_refiner:
-                try:
-                    refined_prompt = prompt_refiner.refine_prompt(original_prompt)
-                    print(f"=== PROMPT REFINEMENT (Attempt {complete_restart_attempt}) ===")
-                    print(f"Original: {original_prompt}")
-                    print(f"Refined: {refined_prompt}")
-                    print("=========================")
-                except Exception as e:
-                    print(f"Prompt refinement failed: {e}. Using original prompt.")
-                    refined_prompt = original_prompt
-            
-            # Step 2: Process the refined prompt
+            # Process the prompt directly
             # Change to parent directory to execute task (for database access)
             original_cwd = os.getcwd()
             os.chdir('..')
-            result = system.process_task(refined_prompt)
+            result = system.process_task(original_prompt)
             os.chdir(original_cwd)
             
             # Check if this attempt was successful
@@ -176,8 +271,8 @@ def process_prompt():
         response = {
             'success': True,
             'original_prompt': original_prompt,
-            'refined_prompt': refined_prompt,
-            'prompt_was_refined': refined_prompt != original_prompt,
+            'refined_prompt': original_prompt,
+            'prompt_was_refined': False,
             'complete_restart_attempts': complete_restart_attempt,
             'max_complete_restarts': max_complete_restarts + 1,
             'execution_retry_attempts': retry_attempts,
@@ -338,7 +433,6 @@ def get_csv_data():
         paginated_df = df.iloc[start_idx:end_idx]
         
         # Convert to list of dictionaries and handle NaN values
-        import numpy as np
         data = paginated_df.replace({np.nan: None}).to_dict('records')
         
         return jsonify({
@@ -363,6 +457,33 @@ def download_csv():
         return jsonify({'error': 'No CSV output file found. Run a prompt first.'}), 404
     
     return send_file(csv_path, as_attachment=True, download_name='output.csv')
+
+@app.route('/api/refine_prompt', methods=['POST'])
+def refine_prompt():
+    """Standalone endpoint for prompt refinement"""
+    if not prompt_refiner:
+        return jsonify({
+            'error': 'Prompt refiner not initialized. Please set GEMINI_API_KEY environment variable.'
+        }), 500
+    
+    data = request.get_json()
+    original_prompt = data.get('prompt', '').strip()
+    
+    if not original_prompt:
+        return jsonify({'error': 'Prompt cannot be empty'}), 400
+    
+    try:
+        refined_prompt = prompt_refiner.refine_prompt(original_prompt)
+        
+        return jsonify({
+            'success': True,
+            'original_prompt': original_prompt,
+            'refined_prompt': refined_prompt,
+            'was_refined': refined_prompt != original_prompt
+        })
+    
+    except Exception as e:
+        return jsonify({'error': f'Prompt refinement failed: {str(e)}'}), 500
 
 @app.route('/api/health')
 def health_check():
