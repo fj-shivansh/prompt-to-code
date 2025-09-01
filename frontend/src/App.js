@@ -25,6 +25,13 @@ function App() {
   const [csvSortConfig, setCsvSortConfig] = useState({ key: '', direction: 'desc' });
   const [loadingCsv, setLoadingCsv] = useState(false);
   const [showPromptDetails, setShowPromptDetails] = useState(false);
+  const [statusMessages, setStatusMessages] = useState([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [refinedPrompt, setRefinedPrompt] = useState('');
+  const [isRefining, setIsRefining] = useState(false);
+  const [showRefinedPrompt, setShowRefinedPrompt] = useState(false);
+  const [refinementError, setRefinementError] = useState('');
+  const [showProcessingStatus, setShowProcessingStatus] = useState(true);
 
   useEffect(() => {
     fetchTickers();
@@ -86,15 +93,13 @@ function App() {
     setLoadingDatabase(false);
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const handleRefinePrompt = async () => {
     if (!prompt.trim()) return;
 
-    setLoading(true);
-    setResult(null);
-
+    setIsRefining(true);
+    setRefinementError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/process_prompt`, {
+      const response = await fetch(`${API_BASE_URL}/refine_prompt`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -103,13 +108,95 @@ function App() {
       });
 
       const data = await response.json();
-      setResult(data);
-      setShowFullOutput(false); // Reset to truncated view for new results
-      setShowPromptDetails(false); // Reset prompt details to collapsed
+      
+      if (data.success) {
+        setRefinedPrompt(data.refined_prompt);
+        setShowRefinedPrompt(true);
+        setRefinementError('');
+      } else {
+        setRefinementError(data.error);
+      }
+    } catch (error) {
+      setRefinementError(`Failed to refine prompt: ${error.message}`);
+    }
+    setIsRefining(false);
+  };
+
+  const useRefinedPrompt = () => {
+    const finalPrompt = refinedPrompt;
+    setPrompt(finalPrompt);
+    setShowRefinedPrompt(false);
+    setRefinedPrompt('');
+    
+    // Trigger form submission programmatically
+    setTimeout(() => {
+      document.querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    }, 100);
+  };
+
+  const dismissRefinedPrompt = () => {
+    setShowRefinedPrompt(false);
+    setRefinedPrompt('');
+    setRefinementError('');
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!prompt.trim()) return;
+
+    setLoading(true);
+    setResult(null);
+    setStatusMessages([]);
+    setIsStreaming(true);
+    setShowFullOutput(false);
+    setShowPromptDetails(false);
+    setShowRefinedPrompt(false);
+
+    try {
+      // Fallback to regular fetch for EventSource POST limitation
+      const response = await fetch(`${API_BASE_URL}/process_prompt_stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt }),
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              setStatusMessages(prev => [...prev, data]);
+              
+              if (data.type === 'final_result') {
+                setResult(data.data);
+                setIsStreaming(false);
+              } else if (data.type === 'final_error') {
+                setResult({ error: data.message });
+                setIsStreaming(false);
+              }
+            } catch (e) {
+              console.warn('Failed to parse SSE data:', line);
+            }
+          }
+        }
+      }
     } catch (error) {
       setResult({
         error: `Failed to process prompt: ${error.message}`
       });
+      setIsStreaming(false);
     }
 
     setLoading(false);
@@ -248,11 +335,191 @@ function App() {
                   disabled={loading}
                 />
               </div>
-              <button type="submit" disabled={loading || !prompt.trim()}>
-                {loading ? 'Processing...' : 'Generate & Execute Code'}
+              <button 
+                type="button"
+                onClick={handleRefinePrompt}
+                disabled={isRefining || loading || !prompt.trim()}
+                className="refine-btn"
+              >
+                {isRefining ? 'Refining...' : '✨ Refine Prompt'}
               </button>
             </form>
           </div>
+
+          {/* Refinement Error */}
+          {refinementError && (
+            <div className="refinement-error">
+              <h3>Refinement Error</h3>
+              <p>{refinementError}</p>
+              <button 
+                onClick={() => setRefinementError('')}
+                className="dismiss-error-btn"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Refined Prompt Preview */}
+          {showRefinedPrompt && (
+            <div className="refined-prompt-section">
+              <h3>Refined Prompt</h3>
+              <p className="refinement-description">
+                Your prompt has been enhanced. You can edit it further or use it as-is:
+              </p>
+              <div className="refined-prompt-editor">
+                <textarea
+                  value={refinedPrompt}
+                  onChange={(e) => setRefinedPrompt(e.target.value)}
+                  rows="6"
+                  className="refined-textarea"
+                  placeholder="Edit the refined prompt as needed..."
+                />
+              </div>
+              <div className="refined-prompt-actions">
+                <button 
+                  onClick={useRefinedPrompt}
+                  className="use-refined-btn"
+                  disabled={!refinedPrompt.trim()}
+                >
+                  Generate & Execute Code
+                </button>
+                <button 
+                  onClick={() => {
+                    dismissRefinedPrompt();
+                    document.querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                  }}
+                  className="use-original-btn"
+                >
+                  Use Original Instead
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Real-time Status Updates */}
+          {(isStreaming || statusMessages.length > 0) && (
+            <div className="status-section">
+              <div 
+                className="status-header"
+                onClick={() => setShowProcessingStatus(!showProcessingStatus)}
+              >
+                <h3>Processing Status</h3>
+                <button className="collapse-btn">
+                  {showProcessingStatus ? '▲' : '▼'}
+                </button>
+              </div>
+              
+              {showProcessingStatus && (
+                <div className="status-content">
+              
+              {/* Progress Bar */}
+              {statusMessages.some(msg => msg.progress) && (
+                <div className="progress-container">
+                  <div className="progress-bar">
+                    <div 
+                      className="progress-fill" 
+                      style={{
+                        width: `${(statusMessages.filter(msg => msg.progress).slice(-1)[0]?.progress?.step || 0) / 4 * 100}%`
+                      }}
+                    ></div>
+                  </div>
+                  <span className="progress-text">
+                    Step {statusMessages.filter(msg => msg.progress).slice(-1)[0]?.progress?.step || 0} of 4
+                  </span>
+                </div>
+              )}
+              
+              {/* Current Status */}
+              <div className="current-status">
+                {statusMessages.slice(-1).map((msg, index) => (
+                  <div key={`current-${index}`} className={`current-message ${msg.type}`}>
+                    {msg.type === 'prompt_refined' ? (
+                      <div>
+                        <strong>✨ Prompt Enhanced</strong>
+                        <div className="refined-prompt-preview">{msg.refined?.substring(0, 150)}...</div>
+                      </div>
+                    ) : (
+                      <div className="status-content">
+                        <span className="status-icon">
+                          {msg.type === 'init' && '🚀'}
+                          {msg.type === 'attempt_start' && '🔄'}
+                          {msg.type === 'refining' && '✨'}
+                          {msg.type === 'generating' && '⚡'}
+                          {msg.type === 'execution_complete' && '📋'}
+                          {msg.type === 'retry' && '🔁'}
+                          {msg.type === 'retry_success' && '✅'}
+                          {msg.type === 'retry_failed' && '❌'}
+                          {msg.type === 'attempt_success' && '🎉'}
+                          {msg.type === 'attempt_failed' && '⚠️'}
+                          {msg.type === 'restarting' && '🔄'}
+                          {msg.type === 'final_error' && '💥'}
+                        </span>
+                        <span>{msg.message}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {isStreaming && (
+                  <div className="streaming-indicator">
+                    <span className="pulse-dot"></span>
+                    <span>Streaming...</span>
+                  </div>
+                )}
+              </div>
+              
+              {/* Attempt Tracking */}
+              {statusMessages.some(msg => msg.attempt) && (
+                <div className="attempt-tracking">
+                  <div className="attempt-header">
+                    <span>Complete Attempts Progress:</span>
+                  </div>
+                  <div className="attempt-grid">
+                    {[1, 2, 3].map(attemptNum => {
+                      const attemptMsgs = statusMessages.filter(msg => msg.attempt === attemptNum);
+                      const isActive = attemptMsgs.length > 0;
+                      const isSuccess = attemptMsgs.some(msg => msg.type === 'attempt_success');
+                      const isFailed = attemptMsgs.some(msg => msg.type === 'attempt_failed');
+                      const retryCount = attemptMsgs.filter(msg => msg.type === 'retry').length;
+                      
+                      return (
+                        <div key={attemptNum} className={`attempt-card ${isActive ? 'active' : ''} ${isSuccess ? 'success' : ''} ${isFailed ? 'failed' : ''}`}>
+                          <div className="attempt-number">Attempt {attemptNum}</div>
+                          <div className="retry-count">
+                            {isActive && `${retryCount}/5 retries`}
+                            {isSuccess && '✅ Success'}
+                            {isFailed && '❌ Failed'}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              
+              {/* Detailed Log (Collapsible) */}
+              <details className="detailed-log">
+                <summary>View Detailed Log ({statusMessages.length} events)</summary>
+                <div className="status-messages">
+                  {statusMessages.map((msg, index) => (
+                    <div key={index} className={`status-message ${msg.type}`}>
+                      <span className="timestamp">[{new Date().toLocaleTimeString()}]</span>
+                      {msg.type === 'prompt_refined' ? (
+                        <div>
+                          <strong>Prompt Refined:</strong>
+                          <div className="refined-prompt">{msg.refined}</div>
+                        </div>
+                      ) : (
+                        <span>{msg.message}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </details>
+                </div>
+              )}
+            </div>
+          )}
 
           {result && (
             <div className="results-section">
