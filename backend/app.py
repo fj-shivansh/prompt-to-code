@@ -20,12 +20,14 @@ from typing import Optional
 import threading
 import time
 from collections import deque
+import signal
+import subprocess
 
 # Load environment variables from .env file
 load_dotenv('../.env')
 
 sys.path.append('..')
-from main import PromptToCodeSystem, DatabaseManager
+from main import PromptToCodeSystem, DatabaseManager, TestResult
 
 class PromptRefiner:
     def __init__(self, api_key: Optional[str] = None):
@@ -76,6 +78,11 @@ CORS(app)
 # Get absolute path to database
 DB_PATH = os.path.abspath('../historical_data.db')
 
+# Global variables for process management
+current_process = None
+stop_requested = False
+process_lock = threading.Lock()
+
 # Initialize the prompt-to-code system
 try:
     # Change to parent directory temporarily to ensure PromptToCodeSystem works correctly
@@ -94,11 +101,19 @@ except ValueError as e:
 
 def generate_status_updates(original_prompt):
     """Generator function for Server-Sent Events with detailed progress tracking"""
+    global stop_requested, current_process
+    
     try:
-        yield f"data: {json.dumps({'type': 'init', 'message': 'Initializing...', 'progress': {'step': 1, 'total': 6}})}\n\n"
+        stop_requested = False
+        yield f"data: {json.dumps({'type': 'init', 'message': 'Initializing...', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
         
         if not system:
             yield f"data: {json.dumps({'type': 'error', 'message': 'System not initialized'})}\n\n"
+            return
+        
+        # Check for stop request
+        if stop_requested:
+            yield f"data: {json.dumps({'type': 'user_stopped', 'message': 'Processing stopped by user'})}\n\n"
             return
         
         # Complete process with restart mechanism
@@ -108,28 +123,125 @@ def generate_status_updates(original_prompt):
         while complete_restart_attempt <= max_complete_restarts:
             complete_restart_attempt += 1
             
-            yield f"data: {json.dumps({'type': 'attempt_start', 'message': f'Starting Complete Attempt {complete_restart_attempt}', 'attempt': complete_restart_attempt, 'max_attempts': max_complete_restarts + 1, 'progress': {'step': 2, 'total': 4}})}\n\n"
+            # Check for stop request before starting attempt
+            if stop_requested:
+                yield f"data: {json.dumps({'type': 'user_stopped', 'message': 'Processing stopped by user'})}\n\n"
+                return
+            
+            yield f"data: {json.dumps({'type': 'attempt_start', 'message': f'Starting attempt {complete_restart_attempt} of {max_complete_restarts + 1}', 'attempt': complete_restart_attempt, 'max_attempts': max_complete_restarts + 1, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
             
             # Process the prompt directly
-            yield f"data: {json.dumps({'type': 'generating', 'message': 'Generating and executing code...', 'progress': {'step': 3, 'total': 4}})}\n\n"
+            yield f"data: {json.dumps({'type': 'generating', 'message': 'Generating and executing code...', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
+            
+            # Check for stop request before processing
+            if stop_requested:
+                yield f"data: {json.dumps({'type': 'user_stopped', 'message': 'Processing stopped by user'})}\n\n"
+                return
             
             original_cwd = os.getcwd()
             os.chdir('..')
             
             # Process the actual task
-            result = system.process_task(original_prompt)
+            with process_lock:
+                if stop_requested:
+                    os.chdir(original_cwd)
+                    yield f"data: {json.dumps({'type': 'user_stopped', 'message': 'Processing stopped by user'})}\n\n"
+                    return
+                    
+                # Set a callback to track subprocess
+                def set_current_process(proc):
+                    global current_process
+                    current_process = proc
+                
+                # Set the process callback on the code executor
+                system.code_executor.process_callback = set_current_process
+                
+                # Monkey patch the system's code executor to check for stop requests
+                original_execute = system.code_executor.execute_code
+                def tracked_execute(code):
+                    if stop_requested:
+                        return TestResult(success=False, result=None, execution_time=0, error="Processing stopped by user")
+                    return original_execute(code)
+                
+                system.code_executor.execute_code = tracked_execute
+                # Create a queue to pass updates in real-time
+                from queue import Queue
+                import threading
+                update_queue = Queue()
+                result_container = [None]
+                
+                def streaming_callback(update_str):
+                    if stop_requested:
+                        return
+                    update_queue.put(update_str)
+                
+                def run_processing():
+                    try:
+                        result_container[0] = system.process_task_streaming(original_prompt, progress_callback=streaming_callback)
+                        update_queue.put("PROCESSING_COMPLETE")
+                    except Exception as e:
+                        update_queue.put(f"ERROR:{str(e)}")
+                
+                # Start processing in a separate thread
+                processing_thread = threading.Thread(target=run_processing)
+                processing_thread.start()
+                
+                # Stream updates in real-time
+                while True:
+                    try:
+                        update = update_queue.get(timeout=1.0)
+                        if update == "PROCESSING_COMPLETE":
+                            break
+                        elif update.startswith("ERROR:"):
+                            yield f"data: {json.dumps({'type': 'error', 'message': update[6:], 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
+                            break
+                        elif update.startswith('data: '):
+                            try:
+                                data = json.loads(update[6:].split('\n')[0])
+                                data['timestamp'] = time.strftime('%H:%M:%S')
+                                yield f"data: {json.dumps(data)}\n\n"
+                            except:
+                                pass
+                    except:
+                        # Timeout - check if processing is still alive
+                        if not processing_thread.is_alive():
+                            break
+                        continue
+                
+                processing_thread.join()
+                result = result_container[0]
+                
+                # Clean up
+                system.code_executor.execute_code = original_execute  # Restore original method
+                system.code_executor.process_callback = None
+                current_process = None
             
             os.chdir(original_cwd)
             
             # Get actual retry count from result
             actual_retries = result['analytics']['generation_info']['retry_attempts'] if result and 'analytics' in result and 'generation_info' in result['analytics'] else 1
             
+            # Get token information from result
+            tokens = None
+            if 'generation' in result and hasattr(result['generation'], 'tokens') and result['generation'].tokens:
+                tokens = result['generation'].tokens
+            
             # Show execution summary
-            yield f"data: {json.dumps({'type': 'execution_complete', 'message': f'Code execution completed ({actual_retries} retries used)', 'retry': actual_retries, 'max_retries': 5, 'attempt': complete_restart_attempt})}\n\n"
+            execution_msg = {
+                'type': 'execution_complete', 
+                'message': f'Code execution completed (retry {actual_retries} of 5)', 
+                'retry': actual_retries, 
+                'max_retries': 5, 
+                'attempt': complete_restart_attempt, 
+                'timestamp': time.strftime('%H:%M:%S')
+            }
+            if tokens:
+                execution_msg['tokens'] = tokens
+            yield f"data: {json.dumps(execution_msg)}\n\n"
             
             # Show final attempt status
             if result and 'error' not in result and result.get('test_result') and result['test_result'].success:
-                yield f"data: {json.dumps({'type': 'attempt_success', 'message': f'Complete Attempt {complete_restart_attempt} succeeded!', 'attempt': complete_restart_attempt, 'progress': {'step': 4, 'total': 4}})}\n\n"
+                yield f"data: {json.dumps({'type': 'attempt_success', 'message': f'Attempt {complete_restart_attempt} succeeded!', 'attempt': complete_restart_attempt, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                 
                 # Send final result
                 max_retries = result['analytics']['generation_info']['max_retries'] if 'analytics' in result and 'generation_info' in result['analytics'] else 5
@@ -163,19 +275,19 @@ def generate_status_updates(original_prompt):
                 if result and result.get('test_result'):
                     error_msg = result['test_result'].error
                 
-                yield f"data: {json.dumps({'type': 'retry_failed', 'message': f'All {actual_retries} retries failed', 'retry': actual_retries, 'attempt': complete_restart_attempt})}\n\n"
-                yield f"data: {json.dumps({'type': 'attempt_failed', 'message': f'Complete Attempt {complete_restart_attempt} failed after {actual_retries} retries', 'attempt': complete_restart_attempt, 'error': error_msg[:200]})}\n\n"
+                yield f"data: {json.dumps({'type': 'retry_failed', 'message': f'All retries failed (retry {actual_retries} of 5)', 'retry': actual_retries, 'attempt': complete_restart_attempt, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
+                yield f"data: {json.dumps({'type': 'attempt_failed', 'message': f'Attempt {complete_restart_attempt} failed after {actual_retries} retries', 'attempt': complete_restart_attempt, 'error': error_msg[:200], 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                 
                 if complete_restart_attempt <= max_complete_restarts:
-                    yield f"data: {json.dumps({'type': 'restarting', 'message': f'Restarting completely... ({max_complete_restarts + 1 - complete_restart_attempt} attempts remaining)', 'progress': {'step': 2, 'total': 4}})}\n\n"
+                    yield f"data: {json.dumps({'type': 'restarting', 'message': f'Restarting... ({max_complete_restarts + 1 - complete_restart_attempt} attempts remaining)', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                     continue
                 else:
                     max_retries = 5  # Default value for error calculation
-                    yield f"data: {json.dumps({'type': 'final_error', 'message': 'All complete attempts failed', 'total_attempts': complete_restart_attempt, 'total_retries': complete_restart_attempt * max_retries})}\n\n"
+                    yield f"data: {json.dumps({'type': 'final_error', 'message': 'All attempts failed', 'total_attempts': complete_restart_attempt, 'total_retries': complete_restart_attempt * max_retries, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                     break
         
     except Exception as e:
-        yield f"data: {json.dumps({'type': 'final_error', 'message': f'System error: {str(e)}'})}\n\n"
+        yield f"data: {json.dumps({'type': 'final_error', 'message': f'System error: {str(e)}', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
 
 @app.route('/api/process_prompt_stream', methods=['POST'])
 def process_prompt_stream():
@@ -484,6 +596,35 @@ def refine_prompt():
     
     except Exception as e:
         return jsonify({'error': f'Prompt refinement failed: {str(e)}'}), 500
+
+@app.route('/api/stop_processing', methods=['POST'])
+def stop_processing():
+    """Endpoint to stop current processing"""
+    global stop_requested, current_process
+    
+    try:
+        with process_lock:
+            stop_requested = True
+            
+            # If there's a current subprocess, terminate it
+            if current_process and current_process.poll() is None:
+                current_process.terminate()
+                try:
+                    current_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    current_process.kill()
+                    current_process.wait()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Stop request sent successfully'
+        })
+    
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Failed to stop processing: {str(e)}'
+        }), 500
 
 @app.route('/api/health')
 def health_check():

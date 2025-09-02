@@ -139,30 +139,35 @@ IMPORTANT: You must complete the ORIGINAL TASK above. Focus on the task requirem
 
 """
 
-        prompt = f"""{error_section}You have access to a SQLite database file called "historical_data.db" with stock market data. The database has a table called "stock_data" with columns:
-Date: string, format "YYYY-MM-DD HH:MM:SS"
-Ticker: string, stock symbol like "AAPL"
-Adj_Close: float, adjusted closing price
+        prompt = f"""{error_section}You have access to a SQLite database file called "historical_data.db" with stock market data. The database has a table called "stock_data" with ONLY these 3 columns:
+
+**AVAILABLE COLUMNS (ONLY THESE 3):**
+- Date: string, format "YYYY-MM-DD HH:MM:SS"
+- Ticker: string, stock symbol like "AAPL"  
+- Adj_Close: float, adjusted closing price
+
+**CRITICAL**: The database DOES NOT contain any other columns such as Open, High, Low, Close, Volume, etc. You can ONLY use Date, Ticker, and Adj_Close columns. Using any other column will result in a "no such column" error.
 
 IMPORTANT: 
-1. Generate COMPLETE, STANDALONE Python code that can be executed directly
-2. Your code must load data from the SQLite database "historical_data.db"
-3. Include all necessary imports (sqlite3, etc.)
-4. Do not use any type hints in function signatures
-5. If your solution requires external libraries (like pandas, numpy, matplotlib, etc.), please list all required packages in a "requirements" field. DO NOT include built-in modules like sqlite3, os, sys, time, json, etc.
-6. Write production-ready code that handles edge cases and includes proper error handling
-7. **CSV OUTPUT REQUIREMENT**: The final result MUST be saved as a CSV file named 'output.csv'. Use pandas to_csv() method or manual CSV writing. DO NOT print tabulate output.
-8. MANDATORY: For DataFrame results, save to CSV like this: df.to_csv('output.csv', index=False). For non-DataFrame results, convert to DataFrame first then save as CSV.
-9. If using pandas DataFrames for processing, YOU MUST configure pandas display options: pd.set_option('display.max_rows', None)
-10. Filter out NULL Adj_Close values when querying the database
-11. When calculating rolling metrics (moving averages, drawdowns, correlations, etc.), if the task specifies x days, 
+1. **DATABASE COLUMNS RESTRICTION**: You can ONLY use these 3 columns: Date, Ticker, Adj_Close. DO NOT reference any other columns (Open, High, Low, Close, Volume, etc.) as they do not exist and will cause "no such column" errors.
+2. Generate COMPLETE, STANDALONE Python code that can be executed directly
+3. Your code must load data from the SQLite database "historical_data.db"
+4. Include all necessary imports (sqlite3, etc.)
+5. Do not use any type hints in function signatures
+6. If your solution requires external libraries (like pandas, numpy, matplotlib, etc.), please list all required packages in a "requirements" field. DO NOT include built-in modules like sqlite3, os, sys, time, json, etc.
+7. Write production-ready code that handles edge cases and includes proper error handling
+8. **CSV OUTPUT REQUIREMENT**: The final result MUST be saved as a CSV file named 'output.csv'. Use pandas to_csv() method or manual CSV writing. DO NOT print tabulate output.
+9. MANDATORY: For DataFrame results, save to CSV like this: df.to_csv('output.csv', index=False). For non-DataFrame results, convert to DataFrame first then save as CSV.
+10. If using pandas DataFrames for processing, YOU MUST configure pandas display options: pd.set_option('display.max_rows', None)
+11. Filter out NULL Adj_Close values when querying the database
+12. When calculating rolling metrics (moving averages, drawdowns, correlations, etc.), if the task specifies x days, 
 interpret it as "today plus the previous (x-1) datapoints." If fewer than (x-1) datapoints exist 
 (e.g., at the start of the series), then calculate using all available rows instead of skipping.
-12. By default, perform the calculation for all tickers. Only restrict to a specific ticker if it is explicitly mentioned in the task.
-13. pd.set_option('display.max_rows', None) IS MANDATORY TO BE USED IF USING PANDAS
-14. **VARIABLE DEFINITIONS**: Always define all variables before using them. If a function needs parameters like 'window', make sure to define them or pass them as arguments. Avoid using undefined variables.
-15. **INDENTATION**: Use consistent 4-space indentation throughout. NO TABS. ALL lines at the same level must have identical indentation. Check for extra spaces before code lines.
-16. **DATE SORTING - MANDATORY**: When working with date-based data, you MUST ALWAYS sort the FINAL OUTPUT by Date in descending order (latest date first) unless explicitly specified otherwise. This applies to:
+13. By default, perform the calculation for all tickers. Only restrict to a specific ticker if it is explicitly mentioned in the task.
+14. pd.set_option('display.max_rows', None) IS MANDATORY TO BE USED IF USING PANDAS
+15. **VARIABLE DEFINITIONS**: Always define all variables before using them. If a function needs parameters like 'window', make sure to define them or pass them as arguments. Avoid using undefined variables.
+16. **INDENTATION**: Use consistent 4-space indentation throughout. NO TABS. ALL lines at the same level must have identical indentation. Check for extra spaces before code lines.
+17. **DATE SORTING - MANDATORY**: When working with date-based data, you MUST ALWAYS sort the FINAL OUTPUT by Date in descending order (latest date first) unless explicitly specified otherwise. This applies to:
    - SQL queries: Use ORDER BY Date DESC 
    - Pandas DataFrames: Use df.sort_values('Date', ascending=False)
    - Final CSV output: ALWAYS sort by Date DESC before saving to CSV
@@ -171,7 +176,7 @@ interpret it as "today plus the previous (x-1) datapoints." If fewer than (x-1) 
 EXAMPLE Expected response (JSON):
 {{
     "code": "#!/usr/bin/env python3\\nimport sqlite3\\nimport pandas as pd\\n\\n# Set pandas display options\\npd.set_option('display.max_rows', None)\\n\\n# Connect to database and load data (sorted by date descending - latest first)\\nconn = sqlite3.connect('historical_data.db')\\ncursor = conn.cursor()\\ncursor.execute('SELECT Date, Ticker, Adj_Close FROM stock_data WHERE Adj_Close IS NOT NULL ORDER BY Date DESC')\\nrows = cursor.fetchall()\\nconn.close()\\n\\n# Convert to DataFrame\\ndf = pd.DataFrame(rows, columns=['Date', 'Ticker', 'Adj_Close'])\\n\\n# Filter for AAPL and find highest adjusted close price\\naapl_data = df[df['Ticker'] == 'AAPL']\\nhighest_price = aapl_data['Adj_Close'].max() if not aapl_data.empty else 0.0\\ntotal_records = len(aapl_data)\\n\\n# Create result DataFrame\\nresult_data = [\\n    ['Ticker', 'AAPL'],\\n    ['Highest Adjusted Close Price', f'${{highest_price:.2f}}'],\\n    ['Total Records Analyzed', total_records]\\n]\\n\\nresult_df = pd.DataFrame(result_data, columns=['Metric', 'Value'])\\nresult_df.to_csv('output.csv', index=False)\\nprint('Results saved to output.csv')",
-    "explanation": "The code connects to the SQLite database, loads all stock data sorted by date (latest first), calculates the highest adjusted close price for AAPL, and saves the result as a CSV file with proper date sorting.",
+    "explanation": "The code connects to the SQLite database using ONLY the available columns (Date, Ticker, Adj_Close), loads stock data sorted by date (latest first), calculates the highest adjusted close price for AAPL, and saves the result as a CSV file with proper date sorting.",
     "requirements": ["pandas"]
 }}
 
@@ -192,6 +197,15 @@ Expected response format (JSON):
             try:
                 response = self.model.generate_content(prompt)
                 
+                # Capture token usage if available
+                tokens = None
+                if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                    tokens = {
+                        'input_tokens': response.usage_metadata.prompt_token_count,
+                        'output_tokens': response.usage_metadata.candidates_token_count,
+                        'total_tokens': response.usage_metadata.total_token_count
+                    }
+                
                 # Extract JSON from response
                 response_text = response.text.strip()
                 if response_text.startswith('```json'):
@@ -204,12 +218,15 @@ Expected response format (JSON):
                 # Successful generation - rotate to next key for next request
                 self._rotate_api_key()
                 
-                return CodeGeneration(
+                generation = CodeGeneration(
                     code=parsed['code'],
                     explanation=parsed['explanation'],
                     task=task,
                     requirements=parsed.get('requirements', [])
                 )
+                # Add token info to the generation object
+                generation.tokens = tokens
+                return generation
                 
             except Exception as e:
                 last_exception = e
@@ -242,6 +259,8 @@ class CodeExecutor:
             "typing": __import__("typing")
         }
         self.generated_file_path = "generated_code.py"
+        self.current_process = None
+        self.process_callback = None
     
     def install_requirements(self, requirements: List[str]) -> bool:
         """Install required packages using pip"""
@@ -282,21 +301,33 @@ This file contains AI-generated code for execution.
             code_file = self.write_code_to_file(code)
             
             # Execute the code as a subprocess to capture output
-            result = subprocess.run(
+            self.current_process = subprocess.Popen(
                 [sys.executable, code_file], 
-                capture_output=True, 
-                text=True, 
-                timeout=30
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
+            
+            # Call the process callback if set (for tracking in backend)
+            if self.process_callback:
+                self.process_callback(self.current_process)
+            
+            try:
+                stdout, stderr = self.current_process.communicate(timeout=30)
+                result_returncode = self.current_process.returncode
+            except subprocess.TimeoutExpired:
+                self.current_process.kill()
+                stdout, stderr = self.current_process.communicate()
+                raise
             
             execution_time = time.time() - start_time
             
-            if result.returncode == 0:
+            if result_returncode == 0:
                 # Debug logging
                 print(f"=== DEBUG: Code Execution Success ===")
-                print(f"STDOUT length: {len(result.stdout)}")
-                print(f"STDOUT content (first 500 chars): {result.stdout[:500]}")
-                print(f"STDOUT content (last 500 chars): {result.stdout[-500:]}")
+                print(f"STDOUT length: {len(stdout)}")
+                print(f"STDOUT content (first 500 chars): {stdout[:500]}")
+                print(f"STDOUT content (last 500 chars): {stdout[-500:]}")
                 
                 # Check if output.csv file was created
                 csv_file_path = "output.csv"
@@ -304,7 +335,7 @@ This file contains AI-generated code for execution.
                 print(f"CSV file exists: {csv_exists}")
                 
                 # Return the full output instead of just the last line
-                full_output = result.stdout.strip()
+                full_output = stdout.strip()
                 final_result = full_output if full_output else ""
                 
                 output_lines = full_output.split('\n') if full_output else []
@@ -322,7 +353,7 @@ This file contains AI-generated code for execution.
                     success=False,
                     result=None,
                     execution_time=execution_time,
-                    error=f"Execution failed with return code {result.returncode}. STDERR: {result.stderr}. STDOUT: {result.stdout}"
+                    error=f"Execution failed with return code {result_returncode}. STDERR: {stderr}. STDOUT: {stdout}"
                 )
             
         except subprocess.TimeoutExpired:
@@ -489,7 +520,8 @@ class PromptToCodeSystem:
             "retry_attempts": attempt,
             "max_retries": max_retries,
             "code_length": len(generation.code) if generation else 0,
-            "requirements_count": len(generation.requirements) if generation and generation.requirements else 0
+            "requirements_count": len(generation.requirements) if generation and generation.requirements else 0,
+            "tokens": generation.tokens if generation and hasattr(generation, 'tokens') and generation.tokens else None
         }
         
         return {
@@ -583,7 +615,8 @@ class PromptToCodeSystem:
             "requirements_list": generation.requirements if generation.requirements else [],
             "executed_in_separate_file": True,
             "retry_attempts": attempt,
-            "max_retries": max_retries
+            "max_retries": max_retries,
+            "tokens": generation.tokens if hasattr(generation, 'tokens') and generation.tokens else None
         }
         
         return {

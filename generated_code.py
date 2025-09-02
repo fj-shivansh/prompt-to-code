@@ -8,50 +8,50 @@ This file contains AI-generated code for execution.
 import sqlite3
 import pandas as pd
 
+# Set pandas display options
 pd.set_option('display.max_rows', None)
 
+# Connect to the database
 conn = sqlite3.connect('historical_data.db')
+
+# Query the database
 query = '''
 SELECT Date, Ticker, Adj_Close
 FROM stock_data
 WHERE Adj_Close IS NOT NULL
-ORDER BY Date, Ticker;
+ORDER BY Date, Ticker
 '''
 df = pd.read_sql_query(query, conn)
 conn.close()
-df['Date'] = pd.to_datetime(df['Date'])
-df = df.sort_values(by=['Date', 'Ticker'])
 
-df = df.set_index(['Date', 'Ticker'])
+# Group data by date
+grouped = df.groupby('Date')
 
-open_prices = df['Adj_Close'].groupby(level='Date').first()
-close_prices = df['Adj_Close'].groupby(level='Date').last()
+# Calculate daily percentage change
+df['Daily_Pct_Change'] = grouped['Adj_Close'].pct_change()
 
-df['Open'] = df.groupby(level='Date')['Adj_Close'].transform('first')
-df['Close'] = df.groupby(level='Date')['Adj_Close'].transform('last')
-
-def percent_change(row):
-    return ((row['Close'] - row['Open']) / row['Open']) * 100
-
-df['pct_change'] = df.apply(percent_change, axis=1)
-
-df_daily_min = df.groupby(level='Date')['pct_change'].agg(['idxmin', 'min'])
-df_daily_min = df_daily_min.rename(columns={'idxmin': 'Ticker', 'min': 'Current Day % Change'})
-df_daily_min['Ticker'] = df_daily_min['Ticker'].apply(lambda x: x[1])
-
-next_day_changes = []
-for date, row in df_daily_min.iterrows():
-    next_date = date + pd.Timedelta(days=1)
+# Find the ticker with the lowest percentage change for each day
+result = []
+for date, group in grouped:
+    min_change_row = group.loc[group['Daily_Pct_Change'].idxmin()]
+    next_day_change = 0.0
+    next_day_date_str = min_change_row['Date']
     try:
-        next_day_ticker = row['Ticker']
-        next_day_change = df.loc[(next_date, next_day_ticker), 'pct_change']
-        next_day_changes.append(next_day_change)
-    except KeyError:
-        next_day_changes.append(None)
+        next_day = df[(df['Date'] > next_day_date_str) & (df['Ticker'] == min_change_row['Ticker'])]
+        next_day_change = next_day['Daily_Pct_Change'].iloc[0]
+    except IndexError:
+        pass  #Handle cases where there is no next day data
+    result.append([
+        min_change_row['Date'],
+        min_change_row['Ticker'],
+        min_change_row['Daily_Pct_Change'],
+        next_day_change
+    ])
 
-df_daily_min['Next Day % Change'] = next_day_changes
-df_daily_min = df_daily_min.fillna(0)
+# Create DataFrame and sort
+result_df = pd.DataFrame(result, columns=['Date', 'Ticker', 'Daily_Pct_Change', 'Next_Day_Pct_Change'])
+result_df = result_df.sort_values('Date', ascending=False)
 
-df_daily_min = df_daily_min.sort_values('Date', ascending=False)
-df_daily_min.to_csv('output.csv', index=True)
+# Save to CSV
+result_df.to_csv('output.csv', index=False)
 print('Results saved to output.csv')

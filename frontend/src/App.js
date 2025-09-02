@@ -32,6 +32,8 @@ function App() {
   const [showRefinedPrompt, setShowRefinedPrompt] = useState(false);
   const [refinementError, setRefinementError] = useState('');
   const [showProcessingStatus, setShowProcessingStatus] = useState(true);
+  const [abortController, setAbortController] = useState(null);
+  const [canStop, setCanStop] = useState(false);
 
   useEffect(() => {
     fetchTickers();
@@ -140,6 +142,35 @@ function App() {
     setRefinementError('');
   };
 
+  const handleStop = async () => {
+    if (abortController) {
+      console.log('Stopping processing...');
+      abortController.abort();
+      
+      // Send stop request to backend
+      try {
+        await fetch(`${API_BASE_URL}/stop_processing`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+      } catch (error) {
+        console.warn('Failed to send stop request to backend:', error);
+      }
+      
+      setCanStop(false);
+      setIsStreaming(false);
+      setLoading(false);
+      setStatusMessages(prev => [...prev, {
+        type: 'user_stopped',
+        message: 'Processing stopped by user',
+        timestamp: new Date().toISOString()
+      }]);
+      setResult({ error: 'Processing was stopped by user' });
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!prompt.trim()) return;
@@ -151,8 +182,13 @@ function App() {
     setShowFullOutput(false);
     setShowPromptDetails(false);
     setShowRefinedPrompt(false);
+    setCanStop(true);
 
     try {
+      // Create abort controller for this request
+      const controller = new AbortController();
+      setAbortController(controller);
+      
       // Fallback to regular fetch for EventSource POST limitation
       const response = await fetch(`${API_BASE_URL}/process_prompt_stream`, {
         method: 'POST',
@@ -160,6 +196,7 @@ function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ prompt }),
+        signal: controller.signal,
       });
 
       const reader = response.body.getReader();
@@ -182,9 +219,11 @@ function App() {
               if (data.type === 'final_result') {
                 setResult(data.data);
                 setIsStreaming(false);
+                setCanStop(false);
               } else if (data.type === 'final_error') {
                 setResult({ error: data.message });
                 setIsStreaming(false);
+                setCanStop(false);
               }
             } catch (e) {
               console.warn('Failed to parse SSE data:', line);
@@ -193,10 +232,17 @@ function App() {
         }
       }
     } catch (error) {
-      setResult({
-        error: `Failed to process prompt: ${error.message}`
-      });
-      setIsStreaming(false);
+      if (error.name === 'AbortError') {
+        console.log('Request was aborted');
+      } else {
+        setResult({
+          error: `Failed to process prompt: ${error.message}`
+        });
+        setIsStreaming(false);
+        setCanStop(false);
+      }
+    } finally {
+      setAbortController(null);
     }
 
     setLoading(false);
@@ -335,14 +381,26 @@ function App() {
                   disabled={loading}
                 />
               </div>
-              <button 
-                type="button"
-                onClick={handleRefinePrompt}
-                disabled={isRefining || loading || !prompt.trim()}
-                className="refine-btn"
-              >
-                {isRefining ? 'Refining...' : '✨ Refine Prompt'}
-              </button>
+              <div className="button-group">
+                <button 
+                  type="button"
+                  onClick={handleRefinePrompt}
+                  disabled={isRefining || loading || !prompt.trim()}
+                  className="refine-btn"
+                >
+                  {isRefining ? 'Refining...' : '✨ Refine Prompt'}
+                </button>
+                {canStop && (
+                  <button 
+                    type="button"
+                    onClick={handleStop}
+                    className="stop-btn"
+                    title="Stop processing"
+                  >
+                    🛑 Stop
+                  </button>
+                )}
+              </div>
             </form>
           </div>
 
@@ -411,111 +469,24 @@ function App() {
               </div>
               
               {showProcessingStatus && (
-                <div className="status-content">
-              
-              {/* Progress Bar */}
-              {statusMessages.some(msg => msg.progress) && (
-                <div className="progress-container">
-                  <div className="progress-bar">
-                    <div 
-                      className="progress-fill" 
-                      style={{
-                        width: `${(statusMessages.filter(msg => msg.progress).slice(-1)[0]?.progress?.step || 0) / 4 * 100}%`
-                      }}
-                    ></div>
-                  </div>
-                  <span className="progress-text">
-                    Step {statusMessages.filter(msg => msg.progress).slice(-1)[0]?.progress?.step || 0} of 4
-                  </span>
-                </div>
-              )}
-              
-              {/* Current Status */}
-              <div className="current-status">
-                {statusMessages.slice(-1).map((msg, index) => (
-                  <div key={`current-${index}`} className={`current-message ${msg.type}`}>
-                    {msg.type === 'prompt_refined' ? (
-                      <div>
-                        <strong>✨ Prompt Enhanced</strong>
-                        <div className="refined-prompt-preview">{msg.refined?.substring(0, 150)}...</div>
+                <div className="logs-only">
+                  <div className="logs-container">
+                    {statusMessages.map((msg, index) => (
+                      <div key={index} className={`log-message ${msg.type}`}>
+                        <span className="timestamp">[{msg.timestamp || new Date().toLocaleTimeString()}]</span>
+                        <span className="log-text">{msg.message}</span>
+                        {msg.tokens && (
+                          <span className="token-info"> | Tokens: {msg.tokens.input_tokens}↑ {msg.tokens.output_tokens}↓</span>
+                        )}
                       </div>
-                    ) : (
-                      <div className="status-content">
-                        <span className="status-icon">
-                          {msg.type === 'init' && '🚀'}
-                          {msg.type === 'attempt_start' && '🔄'}
-                          {msg.type === 'refining' && '✨'}
-                          {msg.type === 'generating' && '⚡'}
-                          {msg.type === 'execution_complete' && '📋'}
-                          {msg.type === 'retry' && '🔁'}
-                          {msg.type === 'retry_success' && '✅'}
-                          {msg.type === 'retry_failed' && '❌'}
-                          {msg.type === 'attempt_success' && '🎉'}
-                          {msg.type === 'attempt_failed' && '⚠️'}
-                          {msg.type === 'restarting' && '🔄'}
-                          {msg.type === 'final_error' && '💥'}
-                        </span>
-                        <span>{msg.message}</span>
+                    ))}
+                    {isStreaming && (
+                      <div className="streaming-indicator">
+                        <span className="pulse-dot"></span>
+                        <span>Processing...</span>
                       </div>
                     )}
                   </div>
-                ))}
-                {isStreaming && (
-                  <div className="streaming-indicator">
-                    <span className="pulse-dot"></span>
-                    <span>Streaming...</span>
-                  </div>
-                )}
-              </div>
-              
-              {/* Attempt Tracking */}
-              {statusMessages.some(msg => msg.attempt) && (
-                <div className="attempt-tracking">
-                  <div className="attempt-header">
-                    <span>Complete Attempts Progress:</span>
-                  </div>
-                  <div className="attempt-grid">
-                    {[1, 2, 3].map(attemptNum => {
-                      const attemptMsgs = statusMessages.filter(msg => msg.attempt === attemptNum);
-                      const isActive = attemptMsgs.length > 0;
-                      const isSuccess = attemptMsgs.some(msg => msg.type === 'attempt_success');
-                      const isFailed = attemptMsgs.some(msg => msg.type === 'attempt_failed');
-                      const retryCount = attemptMsgs.filter(msg => msg.type === 'retry').length;
-                      
-                      return (
-                        <div key={attemptNum} className={`attempt-card ${isActive ? 'active' : ''} ${isSuccess ? 'success' : ''} ${isFailed ? 'failed' : ''}`}>
-                          <div className="attempt-number">Attempt {attemptNum}</div>
-                          <div className="retry-count">
-                            {isActive && `${retryCount}/5 retries`}
-                            {isSuccess && '✅ Success'}
-                            {isFailed && '❌ Failed'}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-              
-              {/* Detailed Log (Collapsible) */}
-              <details className="detailed-log">
-                <summary>View Detailed Log ({statusMessages.length} events)</summary>
-                <div className="status-messages">
-                  {statusMessages.map((msg, index) => (
-                    <div key={index} className={`status-message ${msg.type}`}>
-                      <span className="timestamp">[{new Date().toLocaleTimeString()}]</span>
-                      {msg.type === 'prompt_refined' ? (
-                        <div>
-                          <strong>Prompt Refined:</strong>
-                          <div className="refined-prompt">{msg.refined}</div>
-                        </div>
-                      ) : (
-                        <span>{msg.message}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </details>
                 </div>
               )}
             </div>
@@ -583,10 +554,6 @@ function App() {
                         <span className="value">Yes</span>
                       </div>
                     )}
-                    <div className="metric">
-                      <span className="label">Execution Retries:</span>
-                      <span className="value">{result.execution_retry_attempts - 1}/{result.max_execution_retries - 1}</span>
-                    </div>
                     {result.had_complete_restarts && (
                       <div className="metric">
                         <span className="label">Complete Restarts:</span>
@@ -733,6 +700,22 @@ function App() {
                           <span>Code Length:</span>
                           <span>{result.analytics.generation_info.code_length} chars</span>
                         </div>
+                        {result.analytics.generation_info.tokens && (
+                          <>
+                            <div className="analytics-item">
+                              <span>Input Tokens:</span>
+                              <span>{result.analytics.generation_info.tokens.input_tokens}</span>
+                            </div>
+                            <div className="analytics-item">
+                              <span>Output Tokens:</span>
+                              <span>{result.analytics.generation_info.tokens.output_tokens}</span>
+                            </div>
+                            <div className="analytics-item">
+                              <span>Total Tokens:</span>
+                              <span>{result.analytics.generation_info.tokens.total_tokens}</span>
+                            </div>
+                          </>
+                        )}
                       </div>
                     </div>
                   )}
