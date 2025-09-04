@@ -22,6 +22,11 @@ import time
 from collections import deque
 import signal
 import subprocess
+import matplotlib.pyplot as plt
+import base64
+from io import BytesIO
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend
 
 # Load environment variables from .env file
 load_dotenv('../.env')
@@ -76,7 +81,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Get absolute path to database
-DB_PATH = os.path.abspath('../historical_data.db')
+DB_PATH = os.path.abspath('../historical_data_with_gains.db')
 
 # Global variables for process management
 current_process = None
@@ -229,9 +234,9 @@ def generate_status_updates(original_prompt):
             # Show execution summary
             execution_msg = {
                 'type': 'execution_complete', 
-                'message': f'Code execution completed (retry {actual_retries} of 5)', 
+                'message': f'Code execution completed (retry {actual_retries} of 3)', 
                 'retry': actual_retries, 
-                'max_retries': 5, 
+                'max_retries': 3, 
                 'attempt': complete_restart_attempt, 
                 'timestamp': time.strftime('%H:%M:%S')
             }
@@ -244,7 +249,7 @@ def generate_status_updates(original_prompt):
                 yield f"data: {json.dumps({'type': 'attempt_success', 'message': f'Attempt {complete_restart_attempt} succeeded!', 'attempt': complete_restart_attempt, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                 
                 # Send final result
-                max_retries = result['analytics']['generation_info']['max_retries'] if 'analytics' in result and 'generation_info' in result['analytics'] else 5
+                max_retries = result['analytics']['generation_info']['max_retries'] if 'analytics' in result and 'generation_info' in result['analytics'] else 3
                 
                 response = {
                     'success': True,
@@ -275,14 +280,14 @@ def generate_status_updates(original_prompt):
                 if result and result.get('test_result'):
                     error_msg = result['test_result'].error
                 
-                yield f"data: {json.dumps({'type': 'retry_failed', 'message': f'All retries failed (retry {actual_retries} of 5)', 'retry': actual_retries, 'attempt': complete_restart_attempt, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
+                yield f"data: {json.dumps({'type': 'retry_failed', 'message': f'All retries failed (retry {actual_retries} of 3)', 'retry': actual_retries, 'attempt': complete_restart_attempt, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                 yield f"data: {json.dumps({'type': 'attempt_failed', 'message': f'Attempt {complete_restart_attempt} failed after {actual_retries} retries', 'attempt': complete_restart_attempt, 'error': error_msg[:200], 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                 
                 if complete_restart_attempt <= max_complete_restarts:
                     yield f"data: {json.dumps({'type': 'restarting', 'message': f'Restarting... ({max_complete_restarts + 1 - complete_restart_attempt} attempts remaining)', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                     continue
                 else:
-                    max_retries = 5  # Default value for error calculation
+                    max_retries = 3  # Default value for error calculation
                     yield f"data: {json.dumps({'type': 'final_error', 'message': 'All attempts failed', 'total_attempts': complete_restart_attempt, 'total_retries': complete_restart_attempt * max_retries, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                     break
         
@@ -378,7 +383,7 @@ def process_prompt():
         
         # Extract retry information from the analytics
         retry_attempts = result['analytics']['generation_info']['retry_attempts'] if 'generation_info' in result['analytics'] else 1
-        max_retries = result['analytics']['generation_info']['max_retries'] if 'generation_info' in result['analytics'] else 5
+        max_retries = result['analytics']['generation_info']['max_retries'] if 'generation_info' in result['analytics'] else 3
         
         response = {
             'success': True,
@@ -421,7 +426,7 @@ def get_database_data():
     ticker_filter = request.args.get('ticker', '')
     
     # Validate sort parameters
-    valid_sort_columns = ['Date', 'Ticker', 'Adj_Close']
+    valid_sort_columns = ['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct']
     valid_sort_orders = ['ASC', 'DESC']
     
     if sort_by not in valid_sort_columns:
@@ -449,7 +454,7 @@ def get_database_data():
         # Get paginated and sorted data
         offset = (page - 1) * per_page
         data_query = f"""
-            SELECT Date, Ticker, Adj_Close 
+            SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct 
             FROM stock_data 
             {where_clause}
             ORDER BY {sort_by} {sort_order}
@@ -461,7 +466,7 @@ def get_database_data():
         conn.close()
         
         data = [
-            {"Date": row[0], "Ticker": row[1], "Adj_Close": row[2]}
+            {"Date": row[0], "Ticker": row[1], "Adj_Close": row[2], "Daily_Gain_Pct": row[3], "Forward_Gain_Pct": row[4]}
             for row in rows
         ]
         
@@ -488,7 +493,7 @@ def get_unique_tickers():
         cursor.execute("""
             SELECT DISTINCT Ticker 
             FROM stock_data 
-            WHERE Adj_Close IS NOT NULL 
+            WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL
             ORDER BY Ticker
         """)
         
@@ -626,13 +631,382 @@ def stop_processing():
             'error': f'Failed to stop processing: {str(e)}'
         }), 500
 
+def calculate_nav_long_only(df, initial_amount=100000, amount_to_invest=1):
+    """
+    Calculate NAV (Net Asset Value) for a long-only strategy based on signals
+    
+    Args:
+        df: DataFrame with columns Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct, Signal
+        initial_amount: Initial investment amount (default 100000)
+        amount_to_invest: Amount to invest multiplier (default 1)
+    
+    Returns:
+        DataFrame with Date and NAV columns
+    """
+    df['Date'] = pd.to_datetime(df['Date'])
+    
+    # Filter for signals and valid data
+    df = df[(df['Signal'] == 1) & (df['Adj_Close'].notna())]
+    
+    df = df.sort_values('Date').reset_index(drop=True)
+    
+    nav_list = [initial_amount]
+    date_list = []
+    
+    # Group by Date (automatically gives unique dates in ascending order)
+    for date, daily_df in df.groupby('Date', sort=True):
+        count = len(daily_df)
+        if count > 0:
+            total_forward_gain = daily_df['Forward_Gain_Pct'].sum()
+            avg_forward_gain = total_forward_gain / count
+        else:
+            avg_forward_gain = 0
+        
+        date_list.append(date)
+        # Fixed syntax error: nav_list[-1] * (1 + amount_to_invest * avg_forward_gain)
+        nav_list.append(nav_list[-1] * (1 + amount_to_invest * avg_forward_gain))
+    
+    # Remove the last NAV value (it's one extra)
+    nav_list = nav_list[:-1]
+    
+    nav_df = pd.DataFrame({"Date": date_list, "NAV": nav_list})
+    return nav_df
+
+def generate_nav_graph(nav_df):
+    """Generate a base64-encoded NAV graph image"""
+    plt.figure(figsize=(12, 6))
+    plt.plot(nav_df['Date'], nav_df['NAV'], linewidth=2, color='#2196F3')
+    plt.title('Portfolio NAV Over Time', fontsize=16, fontweight='bold')
+    plt.xlabel('Date', fontsize=12)
+    plt.ylabel('NAV ($)', fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    
+    # Convert to base64
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+    buffer.seek(0)
+    graph_base64 = base64.b64encode(buffer.read()).decode()
+    plt.close()
+    
+    return graph_base64
+
+def generate_condition_code(condition_prompt: str) -> str:
+    """Generate Python code for condition evaluation using existing CSV data"""
+    
+    # Get CSV headers information
+    csv_headers = ""
+    output_csv_path = os.path.abspath('../output.csv')
+    try:
+        if os.path.exists(output_csv_path):
+            df = pd.read_csv(output_csv_path)
+            columns_list = df.columns.tolist()
+            csv_headers = f"Available columns in output.csv: {', '.join(columns_list)}"
+            
+            # Add sample data for better context
+            if len(df) > 0:
+                sample_row = df.iloc[0].to_dict()
+                sample_values = {k: v for k, v in sample_row.items()}
+                csv_headers += f"\n\nSample row for reference: {sample_values}"
+        else:
+            csv_headers = "Warning: output.csv not found. Assuming standard columns."
+    except Exception as e:
+        csv_headers = f"Could not read output.csv headers: {str(e)}"
+    
+    condition_prompt_template = f"""
+You are an expert Python developer and data analyst. Generate COMPLETE, STANDALONE Python code that:
+
+1. Reads the existing CSV file 'output.csv' (which contains calculated data from previous step)
+2. Interprets the natural language condition: "{condition_prompt}"
+3. Maps the condition to the correct column names from the CSV
+4. Creates a new binary column called 'Signal' with values 1 (True) or 0 (False) based on the condition
+5. Saves the result to 'condition_output.csv' with ALL original database columns (Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct) plus the new Signal column
+
+CSV FILE INFO:
+{csv_headers}
+
+CONDITION INTERPRETATION GUIDELINES:
+- The user provided: "{condition_prompt}"
+- Map natural language terms to actual column names intelligently:
+  * "10 day moving average" → look for columns like "MA10", "10_day_MA", "10_day_moving_avg", etc.
+  * "5 day moving average" → look for columns like "MA5", "5_day_MA", "5_day_moving_avg", etc.
+  * "price" or "stock price" → likely "Adj_Close"
+  * "moving average", "MA", "average" → look for columns containing "MA", "avg", "average"
+  * Be flexible with column name matching - use fuzzy matching if needed
+- Convert natural language comparisons:
+  * "greater than", "higher than", "above" → >
+  * "less than", "lower than", "below" → <
+  * "equal to", "equals" → ==
+  * "greater than or equal", "at least" → >=
+  * "less than or equal", "at most" → <=
+
+IMPORTANT:
+- Use pandas for all operations
+- Handle missing values appropriately (treat as False for condition)  
+- Include pd.set_option('display.max_rows', None)
+- The condition should be evaluated row by row
+- 🚨 MANDATORY: Preserve ALL original database columns with EXACT names (Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct) in the final output
+- 🚨 DO NOT change column names: Use "Adj_Close" NOT "Close", "Ticker" NOT "Symbol", etc.
+- Save final result sorted by Date DESC (latest first)
+- If you can't find an exact column match, use the closest match and explain in the explanation
+- Use EXACT column names from the CSV headers listed above after mapping
+- The final condition_output.csv must contain all original columns plus the new Signal column
+- 🚨 CRITICAL: Final CSV must have columns in this exact order: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct, Signal
+
+🚨 MANDATORY TEMPLATE for final DataFrame:
+```
+# EXACT column order and names required:
+final_df = df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', 'Signal']]
+final_df = final_df.sort_values('Date', ascending=False)
+final_df.to_csv('condition_output.csv', index=False)
+```
+
+Expected response format (JSON):
+{{
+    "code": "your complete standalone Python code here as a string",
+    "explanation": "your step-by-step explanation here as a string, including how you mapped the natural language to column names",
+    "requirements": ["list", "of", "required", "packages", "if", "any"]
+}}
+
+NATURAL LANGUAGE CONDITION: {condition_prompt}
+"""
+
+    try:
+        # Reuse existing GeminiClient from the system
+        if system and system.gemini_client:
+            generation = system.gemini_client.generate_code(condition_prompt_template)
+            return generation
+        else:
+            raise ValueError("System not initialized")
+    except Exception as e:
+        raise ValueError(f"Failed to generate condition code: {str(e)}")
+
+@app.route('/api/process_condition', methods=['POST'])
+def process_condition():
+    """Process condition prompt using existing CSV output"""
+    if not system:
+        return jsonify({
+            'error': 'System not initialized. Please set GEMINI_API_KEY environment variable.'
+        }), 500
+    
+    data = request.get_json()
+    condition_prompt = data.get('condition', '').strip()
+    
+    if not condition_prompt:
+        return jsonify({'error': 'Condition prompt cannot be empty'}), 400
+    
+    # Check if output.csv exists
+    output_csv_path = os.path.abspath('../output.csv')
+    if not os.path.exists(output_csv_path):
+        return jsonify({'error': 'No output.csv found. Please run data generation first.'}), 400
+    
+    try:
+        # Implement retry mechanism like main code
+        max_retries = 3
+        generation = None
+        test_result = None
+        attempt = 0
+        error_context = None
+        
+        while attempt < max_retries:
+            attempt += 1
+            print(f"\n=== Condition Attempt {attempt}/{max_retries} ===")
+            
+            try:
+                # Generate condition evaluation code (with error context if retry)
+                if attempt == 1:
+                    generation = generate_condition_code(condition_prompt)
+                else:
+                    print(f"Retrying condition generation with error context: {error_context[:200]}...")
+                    # Add error context to condition prompt for retry
+                    retry_condition_prompt = f"{condition_prompt}\n\nPREVIOUS ATTEMPT FAILED WITH ERROR: {error_context}\n\nPlease fix the above error and try again."
+                    generation = generate_condition_code(retry_condition_prompt)
+                
+                # Install requirements if needed
+                if generation.requirements:
+                    if not system.code_executor.install_requirements(generation.requirements):
+                        error_context = 'Failed to install required packages'
+                        continue
+                
+                # Execute condition code
+                original_cwd = os.getcwd()
+                os.chdir('..')
+                
+                # Write condition code to separate file
+                condition_code_path = "condition_generated_code.py"
+                with open(condition_code_path, "w") as f:
+                    f.write(f'''#!/usr/bin/env python3
+"""
+Generated Condition Code Execution Module
+"""
+
+{generation.code}
+''')
+                
+                # Execute condition code
+                test_result = system.code_executor.execute_code(generation.code)
+                os.chdir(original_cwd)
+                
+                if test_result.success:
+                    print(f"=== Condition SUCCESS on attempt {attempt} ===")
+                    return jsonify({
+                        'success': True,
+                        'condition_prompt': condition_prompt,
+                        'code': generation.code,
+                        'explanation': generation.explanation,
+                        'requirements': generation.requirements or [],
+                        'result': test_result.result,
+                        'execution_time': test_result.execution_time,
+                        'retry_attempts': attempt,
+                        'max_retries': max_retries
+                    })
+                else:
+                    error_context = test_result.error
+                    print(f"=== Condition FAILED on attempt {attempt}: {error_context} ===")
+                    if attempt == max_retries:
+                        break
+                    
+            except Exception as e:
+                error_context = str(e)
+                print(f"=== Condition EXCEPTION on attempt {attempt}: {error_context} ===")
+                if attempt == max_retries:
+                    break
+        
+        # All attempts failed
+        return jsonify({
+            'error': f'Condition processing failed after {max_retries} attempts. Final error: {error_context}'
+        }), 500
+            
+    except Exception as e:
+        return jsonify({'error': f'Condition processing failed: {str(e)}'}), 500
+
+@app.route('/api/condition_csv_data')
+def get_condition_csv_data():
+    """Get condition CSV data with pagination and sorting"""
+    csv_path = os.path.abspath('../condition_output.csv')
+    
+    if not os.path.exists(csv_path):
+        return jsonify({'error': 'No condition output file found. Process a condition first.'}), 404
+    
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    sort_by = request.args.get('sort_by', 'Date')
+    sort_order = request.args.get('sort_order', 'DESC')
+    
+    try:
+        df = pd.read_csv(csv_path)
+        total = len(df)
+        
+        # Apply sorting
+        if sort_by in df.columns:
+            ascending = sort_order.upper() == 'ASC'
+            df = df.sort_values(by=sort_by, ascending=ascending)
+        elif 'Date' in df.columns:
+            df = df.sort_values(by='Date', ascending=False)
+            sort_by = 'Date'
+            sort_order = 'DESC'
+        
+        # Apply pagination
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        paginated_df = df.iloc[start_idx:end_idx]
+        
+        # Convert to list of dictionaries
+        data = paginated_df.replace({np.nan: None}).to_dict('records')
+        
+        return jsonify({
+            'data': data,
+            'columns': df.columns.tolist(),
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': (total + per_page - 1) // per_page,
+            'sort_by': sort_by,
+            'sort_order': sort_order
+        })
+    
+    except Exception as e:
+        return jsonify({'error': f'Error reading condition CSV: {str(e)}'}), 500
+
+@app.route('/api/download_condition_csv')
+def download_condition_csv():
+    """Download condition output CSV file"""
+    csv_path = os.path.abspath('../condition_output.csv')
+    
+    if not os.path.exists(csv_path):
+        return jsonify({'error': 'No condition output file found.'}), 404
+    
+    return send_file(csv_path, as_attachment=True, download_name='condition_output.csv')
+
+@app.route('/api/calculate_nav', methods=['POST'])
+def calculate_nav():
+    """Calculate NAV based on condition results with signals"""
+    # Check if condition_output.csv exists
+    csv_path = os.path.abspath('../condition_output.csv')
+    
+    if not os.path.exists(csv_path):
+        return jsonify({'error': 'No condition output file found. Process a condition first.'}), 404
+    
+    try:
+        data = request.get_json()
+        initial_amount = data.get('initial_amount', 100000)
+        amount_to_invest = data.get('amount_to_invest', 1)
+        
+        # Read condition CSV data
+        df = pd.read_csv(csv_path)
+        
+        # Validate required columns
+        required_columns = ['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', 'Signal']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            return jsonify({
+                'error': f'Missing required columns: {missing_columns}. Ensure condition processing generated all required columns.'
+            }), 400
+        
+        # Calculate NAV
+        nav_df = calculate_nav_long_only(df, initial_amount, amount_to_invest)
+        
+        if nav_df.empty:
+            return jsonify({
+                'error': 'No signals found in the data. Make sure your condition generates signals (Signal=1).'
+            }), 400
+        
+        # Generate graph
+        graph_base64 = generate_nav_graph(nav_df)
+        
+        # Convert NAV data for frontend
+        nav_data = nav_df.to_dict('records')
+        for record in nav_data:
+            record['Date'] = record['Date'].strftime('%Y-%m-%d') if hasattr(record['Date'], 'strftime') else str(record['Date'])
+        
+        # Calculate performance metrics
+        initial_nav = nav_data[0]['NAV'] if nav_data else initial_amount
+        final_nav = nav_data[-1]['NAV'] if nav_data else initial_amount
+        total_return = ((final_nav - initial_nav) / initial_nav) * 100
+        
+        return jsonify({
+            'success': True,
+            'nav_data': nav_data,
+            'graph_base64': graph_base64,
+            'metrics': {
+                'initial_amount': initial_amount,
+                'final_nav': final_nav,
+                'total_return_pct': total_return,
+                'total_signals': len(nav_data),
+                'investment_multiplier': amount_to_invest
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'NAV calculation failed: {str(e)}'}), 500
+
 @app.route('/api/health')
 def health_check():
     return jsonify({'status': 'healthy', 'system_ready': system is not None})
 
-if __name__ == '__main__':
-    # Configure Flask to ignore generated_code.py for auto-reload
-    
+if __name__ == '__main__':    
     # Use werkzeug directly to have more control over file watching
     run_simple('0.0.0.0', 5000, app, use_reloader=True, use_debugger=True,
-               extra_files=[], exclude_patterns=['**/generated_code.py'])
+               extra_files=[], exclude_patterns=['**/generated_code.py','**/condition_generated_code.py'])

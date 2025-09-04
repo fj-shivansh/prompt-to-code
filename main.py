@@ -33,7 +33,7 @@ class CodeGeneration:
 
 
 class DatabaseManager:
-    def __init__(self, db_path: str = "historical_data.db"):
+    def __init__(self, db_path: str = "historical_data_with_gains.db"):
         self.db_path = db_path
     
     def get_sample_data(self, limit: int = 100) -> List[Dict[str, Any]]:
@@ -41,12 +41,12 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        cursor.execute("SELECT Date, Ticker, Adj_Close FROM stock_data WHERE Adj_Close IS NOT NULL LIMIT ?", (limit,))
+        cursor.execute("SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL LIMIT ?", (limit,))
         rows = cursor.fetchall()
         conn.close()
         
         return [
-            {"Date": row[0], "Ticker": row[1], "Adj_Close": row[2]}
+            {"Date": row[0], "Ticker": row[1], "Adj_Close": row[2], "Daily_Gain_Pct": row[3], "Forward_Gain_Pct": row[4]}
             for row in rows
         ]
     
@@ -55,12 +55,12 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        cursor.execute("SELECT Date, Ticker, Adj_Close FROM stock_data WHERE Adj_Close IS NOT NULL")
+        cursor.execute("SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL")
         rows = cursor.fetchall()
         conn.close()
         
         return [
-            {"Date": row[0], "Ticker": row[1], "Adj_Close": row[2]}
+            {"Date": row[0], "Ticker": row[1], "Adj_Close": row[2], "Daily_Gain_Pct": row[3], "Forward_Gain_Pct": row[4]}
             for row in rows
         ]
 
@@ -139,44 +139,74 @@ IMPORTANT: You must complete the ORIGINAL TASK above. Focus on the task requirem
 
 """
 
-        prompt = f"""{error_section}You have access to a SQLite database file called "historical_data.db" with stock market data. The database has a table called "stock_data" with ONLY these 3 columns:
+        prompt = f"""{error_section}🚨 CRITICAL REQUIREMENT: ALL 5 DATABASE COLUMNS MUST BE IN OUTPUT.CSV 🚨
+🚨 COLUMN NAMES MUST BE EXACTLY: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct 🚨
 
-**AVAILABLE COLUMNS (ONLY THESE 3):**
+⚠️ DO NOT USE: Close, Symbol, daily_gain_pct, or any other variations
+✅ MUST USE: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct
+
+You have access to a SQLite database file called "historical_data_with_gains.db" with stock market data. The database has a table called "stock_data" with ONLY these 5 columns:
+
+**AVAILABLE COLUMNS (ONLY THESE 5):**
 - Date: string, format "YYYY-MM-DD HH:MM:SS"
 - Ticker: string, stock symbol like "AAPL"  
 - Adj_Close: float, adjusted closing price
+- Daily_Gain_Pct: float, daily percentage gain/loss (percentage change from previous day)
+- Forward_Gain_Pct: float, forward percentage gain/loss (percentage change to next day)
 
-**CRITICAL**: The database DOES NOT contain any other columns such as Open, High, Low, Close, Volume, etc. You can ONLY use Date, Ticker, and Adj_Close columns. Using any other column will result in a "no such column" error.
+**CRITICAL**: The database contains these 5 columns: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct. You can ONLY use these 5 columns. Using any other column will result in a "no such column" error.
 
 IMPORTANT: 
-1. **DATABASE COLUMNS RESTRICTION**: You can ONLY use these 3 columns: Date, Ticker, Adj_Close. DO NOT reference any other columns (Open, High, Low, Close, Volume, etc.) as they do not exist and will cause "no such column" errors.
+1. **DATABASE COLUMNS RESTRICTION**: You can ONLY use these 5 columns: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct. DO NOT reference any other columns (Open, High, Low, Close, Volume, etc.) as they do not exist and will cause "no such column" errors.
 2. Generate COMPLETE, STANDALONE Python code that can be executed directly
-3. Your code must load data from the SQLite database "historical_data.db"
+3. Your code must load data from the SQLite database "historical_data_with_gains.db"
 4. Include all necessary imports (sqlite3, etc.)
 5. Do not use any type hints in function signatures
 6. If your solution requires external libraries (like pandas, numpy, matplotlib, etc.), please list all required packages in a "requirements" field. DO NOT include built-in modules like sqlite3, os, sys, time, json, etc.
 7. Write production-ready code that handles edge cases and includes proper error handling
-8. **CSV OUTPUT REQUIREMENT**: The final result MUST be saved as a CSV file named 'output.csv'. Use pandas to_csv() method or manual CSV writing. DO NOT print tabulate output.
-9. MANDATORY: For DataFrame results, save to CSV like this: df.to_csv('output.csv', index=False). For non-DataFrame results, convert to DataFrame first then save as CSV.
-10. If using pandas DataFrames for processing, YOU MUST configure pandas display options: pd.set_option('display.max_rows', None)
-11. Filter out NULL Adj_Close values when querying the database
-12. When calculating rolling metrics (moving averages, drawdowns, correlations, etc.), if the task specifies x days, 
+8. 🚨 **NON-NEGOTIABLE CSV COLUMN REQUIREMENT**: The final output.csv file MUST ALWAYS contain these exact 5 columns from the database: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct. You may add additional calculated columns, but these 5 MUST ALWAYS be present. Failure to include all 5 database columns will result in task failure.
+8a. 🚨 **EXACT COLUMN NAME ENFORCEMENT**: Use EXACTLY these column names (case-sensitive): Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct. DO NOT use Close, Symbol, daily_gain_pct, or any other variations.
+9. **CSV OUTPUT REQUIREMENT**: The final result MUST be saved as a CSV file named 'output.csv'. Use pandas to_csv() method or manual CSV writing. DO NOT print tabulate output.
+10. MANDATORY: For DataFrame results, save to CSV like this: df.to_csv('output.csv', index=False). For non-DataFrame results, convert to DataFrame first then save as CSV.
+11. If using pandas DataFrames for processing, YOU MUST configure pandas display options: pd.set_option('display.max_rows', None)
+12. Filter out NULL Adj_Close values when querying the database
+13. **COLUMN PRESERVATION REQUIREMENT**: When saving to output.csv, you MUST preserve all original database columns (Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct) in the final result alongside any new calculated columns. Never drop or exclude the original database columns.
+14. When calculating rolling metrics (moving averages, drawdowns, correlations, etc.), if the task specifies x days, 
 interpret it as "today plus the previous (x-1) datapoints." If fewer than (x-1) datapoints exist 
 (e.g., at the start of the series), then calculate using all available rows instead of skipping.
-13. By default, perform the calculation for all tickers. Only restrict to a specific ticker if it is explicitly mentioned in the task.
-14. pd.set_option('display.max_rows', None) IS MANDATORY TO BE USED IF USING PANDAS
-15. **VARIABLE DEFINITIONS**: Always define all variables before using them. If a function needs parameters like 'window', make sure to define them or pass them as arguments. Avoid using undefined variables.
-16. **INDENTATION**: Use consistent 4-space indentation throughout. NO TABS. ALL lines at the same level must have identical indentation. Check for extra spaces before code lines.
-17. **DATE SORTING - MANDATORY**: When working with date-based data, you MUST ALWAYS sort the FINAL OUTPUT by Date in descending order (latest date first) unless explicitly specified otherwise. This applies to:
+15. By default, perform the calculation for all tickers. Only restrict to a specific ticker if it is explicitly mentioned in the task.
+16. pd.set_option('display.max_rows', None) IS MANDATORY TO BE USED IF USING PANDAS
+17. **VARIABLE DEFINITIONS**: Always define all variables before using them. If a function needs parameters like 'window', make sure to define them or pass them as arguments. Avoid using undefined variables.
+18. **INDENTATION**: Use consistent 4-space indentation throughout. NO TABS. ALL lines at the same level must have identical indentation. Check for extra spaces before code lines.
+19. **DATE SORTING - MANDATORY**: When working with date-based data, you MUST ALWAYS sort the FINAL OUTPUT by Date in descending order (latest date first) unless explicitly specified otherwise. This applies to:
    - SQL queries: Use ORDER BY Date DESC 
    - Pandas DataFrames: Use df.sort_values('Date', ascending=False)
    - Final CSV output: ALWAYS sort by Date DESC before saving to CSV
    - Even if the task asks for "top N" or "highest/lowest" values, the final result should still be sorted by Date DESC
 
+🚨 MANDATORY TEMPLATE - Your final DataFrame BEFORE saving to CSV MUST follow this EXACT pattern:
+```
+# Final DataFrame MUST ALWAYS have these EXACT 5 column names first, in this EXACT order:
+final_df = result_df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct'] + [list_of_your_calculated_columns]]
+final_df = final_df.sort_values('Date', ascending=False)  # Date DESC
+final_df.to_csv('output.csv', index=False)
+```
+
+🚨 CRITICAL: The first 5 columns in output.csv MUST be EXACTLY: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct (in this exact order and spelling)
+
+⚠️ WRONG COLUMN NAMES THAT WILL CAUSE FAILURE:
+❌ "Close" (should be "Adj_Close")  
+❌ "Symbol" (should be "Ticker")
+❌ "daily_gain_pct" (should be "Daily_Gain_Pct") 
+❌ Any other variation of these names
+
+✅ CORRECT COLUMN NAMES (copy these exactly):
+Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct
+
 EXAMPLE Expected response (JSON):
 {{
-    "code": "#!/usr/bin/env python3\\nimport sqlite3\\nimport pandas as pd\\n\\n# Set pandas display options\\npd.set_option('display.max_rows', None)\\n\\n# Connect to database and load data (sorted by date descending - latest first)\\nconn = sqlite3.connect('historical_data.db')\\ncursor = conn.cursor()\\ncursor.execute('SELECT Date, Ticker, Adj_Close FROM stock_data WHERE Adj_Close IS NOT NULL ORDER BY Date DESC')\\nrows = cursor.fetchall()\\nconn.close()\\n\\n# Convert to DataFrame\\ndf = pd.DataFrame(rows, columns=['Date', 'Ticker', 'Adj_Close'])\\n\\n# Filter for AAPL and find highest adjusted close price\\naapl_data = df[df['Ticker'] == 'AAPL']\\nhighest_price = aapl_data['Adj_Close'].max() if not aapl_data.empty else 0.0\\ntotal_records = len(aapl_data)\\n\\n# Create result DataFrame\\nresult_data = [\\n    ['Ticker', 'AAPL'],\\n    ['Highest Adjusted Close Price', f'${{highest_price:.2f}}'],\\n    ['Total Records Analyzed', total_records]\\n]\\n\\nresult_df = pd.DataFrame(result_data, columns=['Metric', 'Value'])\\nresult_df.to_csv('output.csv', index=False)\\nprint('Results saved to output.csv')",
-    "explanation": "The code connects to the SQLite database using ONLY the available columns (Date, Ticker, Adj_Close), loads stock data sorted by date (latest first), calculates the highest adjusted close price for AAPL, and saves the result as a CSV file with proper date sorting.",
+    "code": "#!/usr/bin/env python3\\nimport sqlite3\\nimport pandas as pd\\n\\n# Set pandas display options\\npd.set_option('display.max_rows', None)\\n\\n# Connect to database and load ALL columns with EXACT names\\nconn = sqlite3.connect('historical_data_with_gains.db')\\ncursor = conn.cursor()\\ncursor.execute('SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL ORDER BY Date DESC')\\nrows = cursor.fetchall()\\nconn.close()\\n\\n# Convert to DataFrame with EXACT column names (NOT Close, NOT Symbol)\\ndf = pd.DataFrame(rows, columns=['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct'])\\n\\n# Calculate 10-day and 5-day moving averages for all tickers\\ndf = df.sort_values(['Ticker', 'Date'])\\ndf['10_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=10, min_periods=1).mean().values\\ndf['5_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=5, min_periods=1).mean().values\\n\\n# CRITICAL: Final DataFrame MUST have EXACT column names in EXACT order\\nfinal_df = df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', '10_Day_MA', '5_Day_MA']].copy()\\n\\n# Sort by Date DESC (latest first) and save\\nfinal_df = final_df.sort_values('Date', ascending=False)\\nfinal_df.to_csv('output.csv', index=False)\\nprint('Results saved to output.csv with EXACT database column names')",
+    "explanation": "The code connects to the SQLite database and loads ALL 5 database columns with EXACT names (Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct), calculates moving averages, and saves the complete result to output.csv. CRITICAL: Uses exact database column names - 'Adj_Close' NOT 'Close', 'Ticker' NOT 'Symbol'. Final CSV has exact column order required.",
     "requirements": ["pandas"]
 }}
 
@@ -313,7 +343,7 @@ This file contains AI-generated code for execution.
                 self.process_callback(self.current_process)
             
             try:
-                stdout, stderr = self.current_process.communicate(timeout=30)
+                stdout, stderr = self.current_process.communicate(timeout=120)
                 result_returncode = self.current_process.returncode
             except subprocess.TimeoutExpired:
                 self.current_process.kill()
@@ -411,7 +441,7 @@ class PromptToCodeSystem:
         self.generations = []
         self.test_results = []
     
-    def process_task_streaming(self, task: str, max_retries: int = 5, progress_callback=None):
+    def process_task_streaming(self, task: str, max_retries: int = 3, progress_callback=None):
         """Process task with streaming progress updates"""
         
         if progress_callback:
@@ -530,7 +560,7 @@ class PromptToCodeSystem:
             "analytics": analytics
         }
 
-    def process_task(self, task: str, max_retries: int = 5) -> Dict[str, Any]:
+    def process_task(self, task: str, max_retries: int = 3) -> Dict[str, Any]:
         """Process a complete task with retry mechanism for failed code execution"""
         
         print(f"Processing task: {task}")
