@@ -10,35 +10,37 @@ import pandas as pd
 # Set pandas display options
 pd.set_option('display.max_rows', None)
 
-# Load the CSV file
 try:
+    # Read the CSV file
     df = pd.read_csv('output.csv')
+
+    # Map natural language condition to column names
+    # We'll assume 'ClosingPrice' is 'Adj_Close', '10DayMA' is '10_Day_MA', and '5DayMA' is '5_Day_MA'
+    # If these column names are different in your actual CSV, adjust accordingly.
+    
+    #Handle potential missing columns gracefully
+    if 'Adj_Close' not in df.columns or '10DayMA' not in df.columns or '5DayMA' not in df.columns:
+        raise ValueError("Missing required columns in 'output.csv'. Check column names for 'Adj_Close', '10DayMA', and '5DayMA'.")
+    
+    # Apply the condition and create the 'Signal' column
+    df['Signal'] = (df['10DayMA'] < df['5DayMA']).astype(int)
+
+    # Ensure all original columns are present and in the correct order
+    final_df = df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', 'Signal']]
+
+    # Sort by Date in descending order
+    final_df = final_df.sort_values('Date', ascending=False)
+
+    # Save the result to a new CSV file
+    final_df.to_csv('condition_output.csv', index=False)
+    print('Results saved to condition_output.csv')
+
 except FileNotFoundError:
-    print("Error: output.csv not found. Please ensure the file exists.")
-    exit(1)
+    print("Error: 'output.csv' not found. Please ensure the file exists.")
+except pd.errors.EmptyDataError:
+    print("Error: 'output.csv' is empty.")
+except ValueError as e:
+    print(f"Error: {e}")
+except Exception as e:
+    print(f"An unexpected error occurred: {e}")
 
-# Map natural language condition to column names
-condition_column_10 = 'MA10'
-condition_column_5 = 'MA5'
-
-# Check if the necessary columns exist
-if condition_column_10 not in df.columns or condition_column_5 not in df.columns:
-    print(f"Error: Columns '{condition_column_10}' or '{condition_column_5}' not found in output.csv.")
-    exit(1)
-
-# Apply the condition and create the 'Signal' column. Handle NaN values
-df['Signal'] = ((df[condition_column_10] > df[condition_column_5]) | (df[condition_column_10].isna() | df[condition_column_5].isna())).astype(int)
-
-# Ensure all original columns are present and in the correct order
-required_columns = ['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', 'Signal']
-if not all(col in df.columns for col in required_columns):
-    print("Error: Missing required columns in the DataFrame. ")
-    exit(1)
-
-final_df = df[required_columns]
-
-# Sort by Date DESC (latest first) and save to CSV
-final_df = final_df.sort_values('Date', ascending=False)
-final_df.to_csv('condition_output.csv', index=False)
-
-print('Results saved to condition_output.csv')

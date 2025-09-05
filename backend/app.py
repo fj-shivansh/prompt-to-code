@@ -273,7 +273,8 @@ def generate_status_updates(original_prompt):
                 }
                 
                 yield f"data: {json.dumps({'type': 'final_result', 'data': response})}\n\n"
-                break
+                yield f"data: {json.dumps({'type': 'connection_close'})}\n\n"
+                return
             else:
                 # This complete attempt failed
                 error_msg = result.get('error', 'Unknown error') if result else 'System error'
@@ -289,10 +290,12 @@ def generate_status_updates(original_prompt):
                 else:
                     max_retries = 3  # Default value for error calculation
                     yield f"data: {json.dumps({'type': 'final_error', 'message': 'All attempts failed', 'total_attempts': complete_restart_attempt, 'total_retries': complete_restart_attempt * max_retries, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
-                    break
+                    yield f"data: {json.dumps({'type': 'connection_close'})}\n\n"
+                    return
         
     except Exception as e:
         yield f"data: {json.dumps({'type': 'final_error', 'message': f'System error: {str(e)}', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
+        yield f"data: {json.dumps({'type': 'connection_close'})}\n\n"
 
 @app.route('/api/process_prompt_stream', methods=['POST'])
 def process_prompt_stream():
@@ -631,46 +634,45 @@ def stop_processing():
             'error': f'Failed to stop processing: {str(e)}'
         }), 500
 
-def calculate_nav_long_only(df, initial_amount=100000, amount_to_invest=1):
-    """
-    Calculate NAV (Net Asset Value) for a long-only strategy based on signals
-    
-    Args:
-        df: DataFrame with columns Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct, Signal
-        initial_amount: Initial investment amount (default 100000)
-        amount_to_invest: Amount to invest multiplier (default 1)
-    
-    Returns:
-        DataFrame with Date and NAV columns
-    """
+def calculate_nav_long_only(df,initial_amount=100000,amount_to_invest=1):
+
     df['Date'] = pd.to_datetime(df['Date'])
-    
-    # Filter for signals and valid data
-    df = df[(df['Signal'] == 1) & (df['Adj_Close'].notna())]
-    
+
+
     df = df.sort_values('Date').reset_index(drop=True)
-    
+
     nav_list = [initial_amount]
     date_list = []
-    
+
     # Group by Date (automatically gives unique dates in ascending order)
     for date, daily_df in df.groupby('Date', sort=True):
+        
+        daily_df = daily_df[daily_df["Signal"]==1]
         count = len(daily_df)
         if count > 0:
             total_forward_gain = daily_df['Forward_Gain_Pct'].sum()
             avg_forward_gain = total_forward_gain / count
         else:
             avg_forward_gain = 0
-        
         date_list.append(date)
-        # Fixed syntax error: nav_list[-1] * (1 + amount_to_invest * avg_forward_gain)
-        nav_list.append(nav_list[-1] * (1 + amount_to_invest * avg_forward_gain))
-    
-    # Remove the last NAV value (it's one extra)
+        nav_list.append(nav_list[-1]*(1+amount_to_invest*avg_forward_gain))
+
     nav_list = nav_list[:-1]
     
-    nav_df = pd.DataFrame({"Date": date_list, "NAV": nav_list})
-    return nav_df
+
+    nav_df = pd.DataFrame({"Date":date_list,"NAV":nav_list})
+    start_val = nav_df["NAV"].iloc[0]
+    end_val = nav_df["NAV"].iloc[-1]
+
+    annual_return = ((end_val/start_val)**(250/nav_df.shape[0])-1)
+    annual_return = float(round(annual_return * 100, 2))
+    print(nav_df.shape[0])
+
+    rolling_max = nav_df["NAV"].cummax()
+    drawdown = (nav_df["NAV"] - rolling_max) / rolling_max
+    max_drawdown = float(round(-drawdown.min()*100,2))
+    ratio = float(round((annual_return/max_drawdown)*100,2))
+    return nav_df,annual_return,max_drawdown,ratio
 
 def generate_nav_graph(nav_df):
     """Generate a base64-encoded NAV graph image"""
@@ -966,7 +968,7 @@ def calculate_nav():
             }), 400
         
         # Calculate NAV
-        nav_df = calculate_nav_long_only(df, initial_amount, amount_to_invest)
+        nav_df, annual_return, max_drawdown, ratio = calculate_nav_long_only(df, initial_amount, amount_to_invest)
         
         if nav_df.empty:
             return jsonify({
@@ -994,6 +996,9 @@ def calculate_nav():
                 'initial_amount': initial_amount,
                 'final_nav': final_nav,
                 'total_return_pct': total_return,
+                'annual_return': annual_return,
+                'max_drawdown': max_drawdown,
+                'ratio': ratio,
                 'total_signals': len(nav_data),
                 'investment_multiplier': amount_to_invest
             }
