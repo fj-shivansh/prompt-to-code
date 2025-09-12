@@ -105,7 +105,7 @@ class GeminiClient:
         """Get info about current API key for debugging"""
         return f"Using API key {self.current_key_index + 1}/{len(self.api_keys)}"
     
-    def generate_code(self, task: str, error_context: Optional[str] = None, failed_code: Optional[str] = None) -> CodeGeneration:
+    def generate_code(self, task: str, error_context: Optional[str] = None, failed_code: Optional[str] = None, output_file: str = "output.csv") -> CodeGeneration:
         """Generate code for a given task using Gemini API with round-robin key rotation"""
         
         print(f"Generating code - {self._get_current_api_key_info()}")
@@ -139,11 +139,19 @@ IMPORTANT: You must complete the ORIGINAL TASK above. Focus on the task requirem
 
 """
 
-        prompt = f"""{error_section}🚨 CRITICAL REQUIREMENT: ALL 5 DATABASE COLUMNS MUST BE IN OUTPUT.CSV 🚨
-🚨 COLUMN NAMES MUST BE EXACTLY: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct 🚨
+        prompt = f"""{error_section}🚨🚨🚨 CRITICAL REQUIREMENT: ALL 5 DATABASE COLUMNS MUST BE IN OUTPUT.CSV 🚨🚨🚨
+🚨🚨🚨 COLUMN NAMES MUST BE EXACTLY: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct 🚨🚨🚨
+🚨🚨🚨 THESE 5 COLUMNS MUST ALWAYS BE THE FIRST 5 COLUMNS IN YOUR OUTPUT CSV 🚨🚨🚨
+🚨🚨🚨 ANY ADDITIONAL COLUMNS MUST COME AFTER THESE 5 MANDATORY COLUMNS 🚨🚨🚨
 
 ⚠️ DO NOT USE: Close, Symbol, daily_gain_pct, or any other variations
 ✅ MUST USE: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct
+🚨 FAILURE TO INCLUDE THESE 5 COLUMNS WILL BREAK DOWNSTREAM NAV CALCULATIONS 🚨
+
+🚨🚨🚨 ABSOLUTELY FORBIDDEN: DO NOT RENAME DATABASE COLUMNS 🚨🚨🚨
+🚨🚨🚨 DO NOT USE df.rename() TO CHANGE Daily_Gain_Pct OR Forward_Gain_Pct 🚨🚨🚨
+🚨🚨🚨 KEEP ORIGINAL COLUMN NAMES: Daily_Gain_Pct, Forward_Gain_Pct 🚨🚨🚨
+🚨🚨🚨 IF YOU RENAME COLUMNS, THE SYSTEM WILL BREAK 🚨🚨🚨
 
 You have access to a SQLite database file called "historical_data_with_gains.db" with stock market data. The database has a table called "stock_data" with ONLY these 5 columns:
 
@@ -164,10 +172,11 @@ IMPORTANT:
 5. Do not use any type hints in function signatures
 6. If your solution requires external libraries (like pandas, numpy, matplotlib, etc.), please list all required packages in a "requirements" field. DO NOT include built-in modules like sqlite3, os, sys, time, json, etc.
 7. Write production-ready code that handles edge cases and includes proper error handling
-8. 🚨 **NON-NEGOTIABLE CSV COLUMN REQUIREMENT**: The final output.csv file MUST ALWAYS contain these exact 5 columns from the database: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct. You may add additional calculated columns, but these 5 MUST ALWAYS be present. Failure to include all 5 database columns will result in task failure.
-8a. 🚨 **EXACT COLUMN NAME ENFORCEMENT**: Use EXACTLY these column names (case-sensitive): Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct. DO NOT use Close, Symbol, daily_gain_pct, or any other variations.
-9. **CSV OUTPUT REQUIREMENT**: The final result MUST be saved as a CSV file named 'output.csv'. Use pandas to_csv() method or manual CSV writing. DO NOT print tabulate output.
-10. MANDATORY: For DataFrame results, save to CSV like this: df.to_csv('output.csv', index=False). For non-DataFrame results, convert to DataFrame first then save as CSV.
+8. 🚨🚨🚨 **NON-NEGOTIABLE CSV COLUMN REQUIREMENT**: The final output.csv file MUST ALWAYS contain these exact 5 columns from the database AS THE FIRST 5 COLUMNS: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct. You may add additional calculated columns AFTER these 5, but these 5 MUST ALWAYS be present AS THE FIRST 5 COLUMNS. Failure to include all 5 database columns AS THE FIRST 5 COLUMNS will result in task failure and break NAV calculations.
+8a. 🚨🚨🚨 **EXACT COLUMN NAME ENFORCEMENT**: Use EXACTLY these column names (case-sensitive): Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct. DO NOT use Close, Symbol, daily_gain_pct, or any other variations.
+8b. 🚨🚨🚨 **COLUMN ORDER ENFORCEMENT**: The CSV MUST start with these 5 columns in this EXACT order: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct. Any additional calculated columns must come AFTER these 5.
+9. **CSV OUTPUT REQUIREMENT**: The final result MUST be saved as a CSV file named '{output_file}'. Use pandas to_csv() method or manual CSV writing. DO NOT print tabulate output.
+10. MANDATORY: For DataFrame results, save to CSV like this: df.to_csv('{output_file}', index=False). For non-DataFrame results, convert to DataFrame first then save as CSV.
 11. If using pandas DataFrames for processing, YOU MUST configure pandas display options: pd.set_option('display.max_rows', None)
 12. Filter out NULL Adj_Close values when querying the database
 13. **COLUMN PRESERVATION REQUIREMENT**: When saving to output.csv, you MUST preserve all original database columns (Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct) in the final result alongside any new calculated columns. Never drop or exclude the original database columns.
@@ -183,16 +192,36 @@ interpret it as "today plus the previous (x-1) datapoints." If fewer than (x-1) 
    - Pandas DataFrames: Use df.sort_values('Date', ascending=False)
    - Final CSV output: ALWAYS sort by Date DESC before saving to CSV
    - Even if the task asks for "top N" or "highest/lowest" values, the final result should still be sorted by Date DESC
-
-🚨 MANDATORY TEMPLATE - Your final DataFrame BEFORE saving to CSV MUST follow this EXACT pattern:
+🚨🚨🚨 MANDATORY DATA SORTING RULE - MUST BE DONE BEFORE ANY OPERATIONS 🚨🚨🚨
+🚨🚨🚨 ALWAYS SORT BY TICKER AND DATE BEFORE PERFORMING ANY CALCULATIONS 🚨🚨🚨
+```python
+# MANDATORY: Sort data by Ticker and Date BEFORE any operations
+df = df.sort_values(['Ticker', 'Date'], ascending=[True, True])
 ```
-# Final DataFrame MUST ALWAYS have these EXACT 5 column names first, in this EXACT order:
-final_df = result_df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct'] + [list_of_your_calculated_columns]]
-final_df = final_df.sort_values('Date', ascending=False)  # Date DESC
-final_df.to_csv('output.csv', index=False)
+🚨🚨🚨 THIS SORTING MUST BE APPLIED IMMEDIATELY AFTER LOADING DATA FROM DATABASE 🚨🚨🚨
+🚨🚨🚨 ALL ROLLING WINDOWS, GROUPBY OPERATIONS DEPEND ON THIS SORTING 🚨🚨🚨
+
+🚨🚨🚨 MANDATORY TEMPLATE - Your final DataFrame BEFORE saving to CSV MUST follow this EXACT pattern 🚨🚨🚨
+🚨🚨🚨 DO NOT DEVIATE FROM THIS TEMPLATE - IT IS REQUIRED FOR NAV CALCULATIONS 🚨🚨🚨
+```python
+# Step 1: Get all database columns first
+db_columns = ['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct']
+
+# Step 2: Get your calculated columns (replace with your actual calculated column names)
+calculated_columns = ['Your_Calculated_Column1', 'Your_Calculated_Column2']  # Replace with actual names
+
+# Step 3: MANDATORY - Combine db_columns FIRST, then calculated columns
+final_df = result_df[db_columns + calculated_columns]
+
+# Step 4: Sort by Date DESC
+final_df = final_df.sort_values('Date', ascending=False)
+
+# Step 5: Save to CSV
+final_df.to_csv('{output_file}', index=False)
 ```
 
-🚨 CRITICAL: The first 5 columns in output.csv MUST be EXACTLY: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct (in this exact order and spelling)
+🚨🚨🚨 CRITICAL: The first 5 columns in output.csv MUST be EXACTLY: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct (in this exact order and spelling) 🚨🚨🚨
+🚨🚨🚨 ANY DEVIATION FROM THIS COLUMN ORDER WILL BREAK NAV CALCULATIONS 🚨🚨🚨
 
 ⚠️ WRONG COLUMN NAMES THAT WILL CAUSE FAILURE:
 ❌ "Close" (should be "Adj_Close")  
@@ -205,8 +234,8 @@ Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct
 
 EXAMPLE Expected response (JSON):
 {{
-    "code": "#!/usr/bin/env python3\\nimport sqlite3\\nimport pandas as pd\\n\\n# Set pandas display options\\npd.set_option('display.max_rows', None)\\n\\n# Connect to database and load ALL columns with EXACT names\\nconn = sqlite3.connect('historical_data_with_gains.db')\\ncursor = conn.cursor()\\ncursor.execute('SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL ORDER BY Date DESC')\\nrows = cursor.fetchall()\\nconn.close()\\n\\n# Convert to DataFrame with EXACT column names (NOT Close, NOT Symbol)\\ndf = pd.DataFrame(rows, columns=['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct'])\\n\\n# Calculate 10-day and 5-day moving averages for all tickers\\ndf = df.sort_values(['Ticker', 'Date'])\\ndf['10_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=10, min_periods=1).mean().values\\ndf['5_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=5, min_periods=1).mean().values\\n\\n# CRITICAL: Final DataFrame MUST have EXACT column names in EXACT order\\nfinal_df = df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', '10_Day_MA', '5_Day_MA']].copy()\\n\\n# Sort by Date DESC (latest first) and save\\nfinal_df = final_df.sort_values('Date', ascending=False)\\nfinal_df.to_csv('output.csv', index=False)\\nprint('Results saved to output.csv with EXACT database column names')",
-    "explanation": "The code connects to the SQLite database and loads ALL 5 database columns with EXACT names (Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct), calculates moving averages, and saves the complete result to output.csv. CRITICAL: Uses exact database column names - 'Adj_Close' NOT 'Close', 'Ticker' NOT 'Symbol'. Final CSV has exact column order required.",
+    "code": "#!/usr/bin/env python3\\nimport sqlite3\\nimport pandas as pd\\n\\n# Set pandas display options\\npd.set_option('display.max_rows', None)\\n\\n# Connect to database and load ALL columns with EXACT names\\nconn = sqlite3.connect('historical_data_with_gains.db')\\ncursor = conn.cursor()\\ncursor.execute('SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL')\\nrows = cursor.fetchall()\\nconn.close()\\n\\n# Convert to DataFrame with EXACT column names (NOT Close, NOT Symbol)\\ndf = pd.DataFrame(rows, columns=['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct'])\\n\\n# MANDATORY: Sort by Ticker and Date BEFORE any operations\\ndf = df.sort_values(['Ticker', 'Date'], ascending=[True, True])\\n\\n# Calculate 10-day and 5-day moving averages for all tickers\\ndf['10_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=10, min_periods=1).mean().values\\ndf['5_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=5, min_periods=1).mean().values\\n\\n# CRITICAL: Final DataFrame MUST have EXACT column names in EXACT order\\nfinal_df = df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', '10_Day_MA', '5_Day_MA']].copy()\\n\\n# Sort by Date DESC (latest first) and save\\nfinal_df = final_df.sort_values('Date', ascending=False)\\nfinal_df.to_csv('{output_file}', index=False)\\nprint('Results saved to output.csv with EXACT database column names')",
+    "explanation": "The code connects to the SQLite database and loads ALL 5 database columns with EXACT names (Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct), MANDATORILY sorts by Ticker and Date before any calculations, calculates moving averages, and saves the complete result to output.csv. CRITICAL: Uses exact database column names - 'Adj_Close' NOT 'Close', 'Ticker' NOT 'Symbol'. Final CSV has exact column order required.",
     "requirements": ["pandas"]
 }}
 
@@ -292,6 +321,25 @@ class CodeExecutor:
         self.current_process = None
         self.process_callback = None
     
+    def write_code_to_file(self, code: str, filename: str = None) -> str:
+        """Write generated code to separate file"""
+        if filename is None:
+            filename = self.generated_file_path
+            
+        full_code = f'''#!/usr/bin/env python3
+"""
+Generated Code Execution Module
+This file contains AI-generated code for execution.
+"""
+
+{code}
+'''
+        
+        with open(filename, "w") as f:
+            f.write(full_code)
+        
+        return filename
+    
     def install_requirements(self, requirements: List[str]) -> bool:
         """Install required packages using pip"""
         if not requirements:
@@ -306,29 +354,14 @@ class CodeExecutor:
             print(f"Failed to install requirements: {e}")
             return False
     
-    def write_code_to_file(self, code: str) -> str:
-        """Write generated code to separate file"""
-        full_code = f'''#!/usr/bin/env python3
-"""
-Generated Code Execution Module
-This file contains AI-generated code for execution.
-"""
-
-{code}
-'''
-        
-        with open(self.generated_file_path, "w") as f:
-            f.write(full_code)
-        
-        return self.generated_file_path
     
-    def execute_code(self, code: str) -> TestResult:
+    def execute_code(self, code: str, filename: str = None) -> TestResult:
         """Execute generated code directly as a standalone script"""
         start_time = time.time()
         
         try:
             # Write code to separate file
-            code_file = self.write_code_to_file(code)
+            code_file = self.write_code_to_file(code, filename)
             
             # Execute the code as a subprocess to capture output
             self.current_process = subprocess.Popen(
@@ -392,7 +425,7 @@ This file contains AI-generated code for execution.
                 success=False,
                 result=None,
                 execution_time=execution_time,
-                error="Code execution timed out after 30 seconds"
+                error="Code execution timed out after 120 seconds. Consider optimizing the code: reduce data processing complexity, use vectorized operations instead of loops, limit dataset size with date filters, optimize database queries with appropriate WHERE clauses, avoid nested loops or expensive calculations. For rolling window operations, pivot dataframes only once to wide format, use pandas/numpy rolling correlation or efficient slicing instead of full dataframe scans, ensure algorithms are O(n × tickers²) or better, and store only necessary results for each window to minimize memory usage."
             )
         except Exception as e:
             execution_time = time.time() - start_time
@@ -441,18 +474,11 @@ class PromptToCodeSystem:
         self.generations = []
         self.test_results = []
     
-    def process_task_streaming(self, task: str, max_retries: int = 3, progress_callback=None):
-        """Process task with streaming progress updates"""
-        
-        if progress_callback:
-            progress_callback(f"data: {json.dumps({'type': 'task_start', 'message': 'Starting task processing...'})}\n\n")
-        
-        print(f"Processing task: {task}")
+    def generate_and_execute_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2) -> Dict[str, Any]:
+        """Generate code with 2 parallel LLM calls and execute both with restart mechanism and CSV identity check"""
+        print(f"Starting parallel processing for task: {task}")
         
         # Load data for analytics
-        if progress_callback:
-            progress_callback(f"data: {json.dumps({'type': 'loading_data', 'message': 'Loading database...'})}\n\n")
-        
         print("Loading test data...")
         data = self.db_manager.get_all_data()
         data_stats = {
@@ -464,196 +490,587 @@ class PromptToCodeSystem:
             }
         }
         
-        generation = None
-        test_result = None
-        attempt = 0
-        error_context = None
-        failed_code = None
-        
-        while attempt < max_retries:
-            attempt += 1
+        # Try up to 2 complete attempts to get identical CSVs
+        max_identity_attempts = 2
+        for identity_attempt in range(max_identity_attempts):
+            print(f"\n=== Identity Attempt {identity_attempt + 1}/{max_identity_attempts} ===")
+            results = {"llm1": None, "llm2": None}
             
-            if progress_callback:
-                progress_callback(f"data: {json.dumps({'type': 'retry', 'message': f'Execution Retry {attempt}', 'retry': attempt, 'max_retries': max_retries})}\n\n")
-            
-            print(f"\n=== Attempt {attempt}/{max_retries} ===")
-            
-            # Generate code (with error context if retry)
-            if progress_callback:
-                progress_callback(f"data: {json.dumps({'type': 'generating_code', 'message': f'Generating code (retry {attempt})...'})}\n\n")
-            
-            print("Generating code with Gemini API...")
-            try:
-                if attempt == 1:
-                    generation = self.gemini_client.generate_code(task)
-                else:
-                    print(f"Retrying with error context: {error_context[:200]}...")
-                    generation = self.gemini_client.generate_code(task, error_context, failed_code)
+            def process_llm(llm_id: str, output_file: str):
+                """Process single LLM generation and execution with complete restart mechanism"""
+                print(f"Starting {llm_id} processing...")
                 
-                self.generations.append(generation)
-                
-                if generation.requirements:
-                    print(f"Requirements: {', '.join(generation.requirements)}")
-                    if progress_callback:
-                        progress_callback(f"data: {json.dumps({'type': 'installing_deps', 'message': 'Installing dependencies...'})}\n\n")
+                # Complete restart loop
+                for complete_restart in range(max_complete_restarts + 1):  # +1 for initial attempt
+                    print(f"{llm_id} - Complete restart {complete_restart + 1}/{max_complete_restarts + 1}")
                     
-                    # Install requirements
-                    if not self.code_executor.install_requirements(generation.requirements):
-                        error_context = "Failed to install required packages"
-                        failed_code = generation.code
-                        if progress_callback:
-                            progress_callback(f"data: {json.dumps({'type': 'retry_failed', 'message': f'Retry {attempt} failed: dependency installation', 'retry': attempt})}\n\n")
-                        continue
+                    previous_error = None
+                    previous_code = None
+                    
+                    # Error attempt loop within each complete restart
+                    for error_attempt in range(1, max_error_attempts + 2):  # +1 for initial attempt within restart
+                        try:
+                            total_attempt = complete_restart * (max_error_attempts + 1) + error_attempt
+                            print(f"{llm_id} - Error attempt {error_attempt}/{max_error_attempts + 1} (total attempt {total_attempt})")
+                            
+                            # Generate code with specific output file and error context for retries
+                            if error_attempt == 1:
+                                # First attempt of this complete restart (no error context)
+                                generation = self.gemini_client.generate_code(task, output_file=output_file)
+                            else:
+                                # Retry attempt within same complete restart (with error context)
+                                print(f"{llm_id} - Retrying with error context from previous attempt")
+                                generation = self.gemini_client.generate_code(task, 
+                                                                            error_context=previous_error, 
+                                                                            failed_code=previous_code, 
+                                                                            output_file=output_file)
+                            
+                            # Install requirements if needed
+                            if generation.requirements:
+                                if not self.code_executor.install_requirements(generation.requirements):
+                                    print(f"{llm_id} - Failed to install requirements on attempt {total_attempt}")
+                                    continue
+                            
+                            # Execute code with specific filename
+                            filename = f"generated_code_{llm_id}.py"
+                            test_result = self.code_executor.execute_code(generation.code, filename)
+                            
+                            if test_result.success:
+                                print(f"{llm_id} - Success on total attempt {total_attempt}!")
+                                results[llm_id] = {
+                                    "generation": generation,
+                                    "test_result": test_result,
+                                    "attempts": total_attempt,
+                                    "complete_restarts": complete_restart,
+                                    "error_attempts": error_attempt
+                                }
+                                return
+                            else:
+                                print(f"{llm_id} - Failed on attempt {total_attempt}: {test_result.error}")
+                                # Store error context for next retry
+                                previous_error = test_result.error
+                                previous_code = generation.code
+                                
+                        except Exception as e:
+                            total_attempt = complete_restart * (max_error_attempts + 1) + error_attempt
+                            print(f"{llm_id} - Exception on attempt {total_attempt}: {str(e)}")
+                            # Store exception context for next retry
+                            previous_error = str(e)
+                            if 'generation' in locals():
+                                previous_code = generation.code
+                    
+                    # All error attempts for this complete restart failed
+                    if complete_restart < max_complete_restarts:
+                        print(f"{llm_id} - Complete restart {complete_restart + 1} failed, starting fresh...")
+                    else:
+                        print(f"{llm_id} - All complete restarts failed")
+                
+                print(f"{llm_id} - All attempts failed")
+            
+            # Run both LLMs sequentially to avoid threading issues
+            print("Running LLM1...")
+            process_llm("llm1", "output_llm1.csv")
+            print("Running LLM2...")  
+            process_llm("llm2", "output_llm2.csv")
+            
+            # Check if both succeeded
+            successful_results = [r for r in results.values() if r is not None]
+            
+            if len(successful_results) == 2:
+                # Both succeeded, check if CSVs are identical
+                print("Both LLMs succeeded. Checking if CSV outputs are identical...")
+                csv1_path = "output_llm1.csv"
+                csv2_path = "output_llm2.csv"
+                
+                try:
+                    import pandas as pd
+                    df1 = pd.read_csv(csv1_path)
+                    df2 = pd.read_csv(csv2_path)
+                    
+                    # Check if CSVs are identical
+                    are_identical = df1.equals(df2)
+                    
+                    if are_identical:
+                        print(f"SUCCESS! CSVs are identical on identity attempt {identity_attempt + 1}")
+                        # Use the first result and mark as identical
+                        final_generation = results["llm1"]["generation"]
+                        final_test_result = results["llm1"]["test_result"]
                         
-            except Exception as e:
-                error_context = f"Code generation failed: {str(e)}"
-                if progress_callback:
-                    progress_callback(f"data: {json.dumps({'type': 'retry_failed', 'message': f'Retry {attempt} failed: code generation error', 'retry': attempt})}\n\n")
-                if attempt == max_retries:
-                    return {"error": error_context}
-                continue
-            
-            # Execute and test code
-            if progress_callback:
-                progress_callback(f"data: {json.dumps({'type': 'executing', 'message': f'Executing code (retry {attempt})...'})}\n\n")
-            
-            print("Executing generated code...")
-            test_result = self.code_executor.execute_code(generation.code)
-            self.test_results.append(test_result)
-            
-            if test_result.success:
-                if progress_callback:
-                    progress_callback(f"data: {json.dumps({'type': 'retry_success', 'message': f'Retry {attempt} succeeded!', 'retry': attempt})}\n\n")
-                
-                print(f"Execution successful! Result: {test_result.result}")
-                print(f"Execution time: {test_result.execution_time:.4f} seconds")
-                break  # Success - exit retry loop
-            else:
-                if progress_callback:
-                    progress_callback(f"data: {json.dumps({'type': 'retry_failed', 'message': f'Retry {attempt} failed: execution error', 'retry': attempt})}\n\n")
-                
-                print(f"Execution failed: {test_result.error}")
-                error_context = test_result.error
-                failed_code = generation.code
-                
-                if attempt == max_retries:
-                    print(f"Max retries ({max_retries}) reached. Final error: {test_result.error}")
+                        self.copy_to_output_csv(csv1_path)
+                        
+                        analytics = Analytics.analyze_results([final_generation], [final_test_result], data_stats)
+                        analytics["generation_info"] = {
+                            "retry_attempts": results["llm1"]["attempts"],
+                            "max_retries": (max_complete_restarts + 1) * (max_error_attempts + 1),
+                            "complete_restarts": results["llm1"].get("complete_restarts", 0),
+                            "max_complete_restarts": max_complete_restarts,
+                            "error_attempts": results["llm1"].get("error_attempts", 1),
+                            "max_error_attempts": max_error_attempts,
+                            "parallel_mode": True,
+                            "successful_llms": 2,
+                            "total_llms": 2,
+                            "identity_attempts": identity_attempt + 1,
+                            "max_identity_attempts": max_identity_attempts,
+                            "csvs_identical": True,
+                            "selected_llm": "llm1"
+                        }
+                        
+                        return {
+                            "generation": final_generation,
+                            "test_result": final_test_result,
+                            "analytics": analytics,
+                            "parallel_results": results,
+                            "csvs_identical": True,
+                            "identity_attempt": identity_attempt + 1
+                        }
+                    else:
+                        print(f"CSVs are NOT identical on identity attempt {identity_attempt + 1}")
+                        if identity_attempt + 1 < max_identity_attempts:
+                            print(f"Restarting both LLMs for identity attempt {identity_attempt + 2}...")
+                            continue
+                        else:
+                            print("Maximum identity attempts reached. Falling back to comparison logic.")
+                            break
+                            
+                except Exception as e:
+                    print(f"Error comparing CSVs: {str(e)}. Falling back to comparison logic.")
                     break
-                else:
-                    print(f"Retrying... ({max_retries - attempt} attempts remaining)")
+            else:
+                # Not both succeeded, exit identity attempts and handle normally
+                print(f"Only {len(successful_results)} LLM(s) succeeded. Exiting identity attempts.")
+                break
         
-        # Generate analytics
-        analytics = Analytics.analyze_results([generation], [test_result], data_stats)
+        # Fallback logic - analyze results using existing comparison logic
+        print("\\nFalling back to existing CSV comparison logic...")
+        successful_results = [r for r in results.values() if r is not None]
         
-        # Add generation info to analytics
-        analytics["generation_info"] = {
-            "retry_attempts": attempt,
-            "max_retries": max_retries,
-            "code_length": len(generation.code) if generation else 0,
-            "requirements_count": len(generation.requirements) if generation and generation.requirements else 0,
-            "tokens": generation.tokens if generation and hasattr(generation, 'tokens') and generation.tokens else None
-        }
-        
-        return {
-            "generation": generation,
-            "test_result": test_result,
-            "analytics": analytics
-        }
-
-    def process_task(self, task: str, max_retries: int = 3) -> Dict[str, Any]:
-        """Process a complete task with retry mechanism for failed code execution"""
-        
-        print(f"Processing task: {task}")
-        
-        # Load data for analytics
-        print("Loading test data...")
-        data = self.db_manager.get_all_data()
-        data_stats = {
-            "total_records": len(data),
-            "unique_tickers": len(set(d["Ticker"] for d in data)),
-            "date_range": {
-                "start": min(d["Date"] for d in data),
-                "end": max(d["Date"] for d in data)
+        if len(successful_results) == 0:
+            return {"error": "Both LLM calls failed"}
+        elif len(successful_results) == 1:
+            # One succeeded, use it
+            successful_result = successful_results[0]
+            
+            # Determine which LLM succeeded and copy its CSV to output.csv
+            if results["llm1"] is not None:
+                selected_file = "output_llm1.csv"
+                selected_llm = "llm1"
+            else:
+                selected_file = "output_llm2.csv" 
+                selected_llm = "llm2"
+            
+            self.copy_to_output_csv(selected_file)
+            
+            analytics = Analytics.analyze_results([successful_result["generation"]], [successful_result["test_result"]], data_stats)
+            analytics["generation_info"] = {
+                "retry_attempts": successful_result["attempts"],
+                "max_retries": (max_complete_restarts + 1) * (max_error_attempts + 1),
+                "complete_restarts": successful_result.get("complete_restarts", 0),
+                "max_complete_restarts": max_complete_restarts,
+                "error_attempts": successful_result.get("error_attempts", 1),
+                "max_error_attempts": max_error_attempts,
+                "parallel_mode": True,
+                "successful_llms": 1,
+                "total_llms": 2,
+                "identity_attempts": max_identity_attempts,
+                "max_identity_attempts": max_identity_attempts,
+                "csvs_identical": False,
+                "selected_llm": selected_llm
             }
-        }
-        
-        generation = None
-        test_result = None
-        attempt = 0
-        error_context = None
-        failed_code = None
-        
-        while attempt < max_retries:
-            attempt += 1
-            print(f"\n=== Attempt {attempt}/{max_retries} ===")
             
-            # Generate code (with error context if retry)
-            print("Generating code with Gemini API...")
-            try:
-                if attempt == 1:
-                    generation = self.gemini_client.generate_code(task)
-                else:
-                    print(f"Retrying with error context: {error_context[:200]}...")
-                    generation = self.gemini_client.generate_code(task, error_context, failed_code)
-                
-                self.generations.append(generation)
-                print(f"Generated code:\n{generation.code}")
-                print(f"Explanation: {generation.explanation}")
-                
-                if generation.requirements:
-                    print(f"Requirements: {', '.join(generation.requirements)}")
-                    # Install requirements
-                    if not self.code_executor.install_requirements(generation.requirements):
-                        error_context = "Failed to install required packages"
-                        failed_code = generation.code
-                        continue
-                        
-            except Exception as e:
-                error_context = f"Code generation failed: {str(e)}"
-                if attempt == max_retries:
-                    return {"error": error_context}
-                continue
+            return {
+                "generation": successful_result["generation"],
+                "test_result": successful_result["test_result"],
+                "analytics": analytics,
+                "parallel_results": results
+            }
+        else:
+            # Both succeeded, now compare and choose the best one
+            print("Both LLMs succeeded. Comparing CSVs and selecting the best result...")
             
-            # Execute and test code
-            print("Executing generated code...")
-            test_result = self.code_executor.execute_code(generation.code)
-            self.test_results.append(test_result)
+            comparison_result = self.compare_and_select_best_csv(task, results["llm1"]["generation"], results["llm2"]["generation"])
             
-            if test_result.success:
-                print(f"Execution successful! Result: {test_result.result}")
-                print(f"Execution time: {test_result.execution_time:.4f} seconds")
-                break  # Success - exit retry loop
+            if "error" in comparison_result:
+                # If comparison fails, use first result as fallback
+                print(f"Comparison failed: {comparison_result['error']}. Using first result as fallback.")
+                final_generation = successful_results[0]["generation"]
+                final_test_result = successful_results[0]["test_result"]
             else:
-                print(f"Execution failed: {test_result.error}")
-                error_context = test_result.error
-                failed_code = generation.code
-                
-                if attempt == max_retries:
-                    print(f"Max retries ({max_retries}) reached. Final error: {test_result.error}")
-                    break
+                final_generation = comparison_result["final_generation"]
+                # Find the corresponding test result
+                if comparison_result["selected_llm"] == "llm1":
+                    final_test_result = results["llm1"]["test_result"]
                 else:
-                    print(f"Retrying... ({max_retries - attempt} attempts remaining)")
+                    final_test_result = results["llm2"]["test_result"]
+            
+            # Copy the final result to output.csv for frontend
+            self.copy_to_output_csv(comparison_result.get("selected_file", "output_llm1.csv"))
+            
+            generations = [r["generation"] for r in successful_results]
+            test_results = [r["test_result"] for r in successful_results]
+            analytics = Analytics.analyze_results([final_generation], [final_test_result], data_stats)
+            analytics["generation_info"] = {
+                "retry_attempts": max(r["attempts"] for r in successful_results),
+                "max_retries": (max_complete_restarts + 1) * (max_error_attempts + 1),
+                "complete_restarts": max(r.get("complete_restarts", 0) for r in successful_results),
+                "max_complete_restarts": max_complete_restarts,
+                "error_attempts": max(r.get("error_attempts", 1) for r in successful_results),
+                "max_error_attempts": max_error_attempts,
+                "parallel_mode": True,
+                "successful_llms": 2,
+                "total_llms": 2,
+                "identity_attempts": max_identity_attempts,
+                "max_identity_attempts": max_identity_attempts,
+                "csvs_identical": False,
+                "comparison_performed": True,
+                "similarity_score": comparison_result.get("similarity_score"),
+                "selected_llm": comparison_result.get("selected_llm", "llm1")
+            }
+            
+            return {
+                "generation": final_generation,
+                "test_result": final_test_result,
+                "analytics": analytics,
+                "parallel_results": results,
+                "comparison_result": comparison_result,
+                "both_succeeded": True
+            }
+    
+    def compare_csv_files(self) -> Dict[str, Any]:
+        """Compare the two generated CSV files and get similarity analysis"""
+        import pandas as pd
         
-        # Generate analytics
-        analytics = Analytics.analyze_results([generation], [test_result], data_stats)
+        csv1_path = "output_llm1.csv"
+        csv2_path = "output_llm2.csv"
         
-        # Add additional analytics for requirements and execution environment
-        analytics["generation_info"] = {
-            "code_length": len(generation.code),
-            "has_requirements": bool(generation.requirements),
-            "requirements_count": len(generation.requirements) if generation.requirements else 0,
-            "requirements_list": generation.requirements if generation.requirements else [],
-            "executed_in_separate_file": True,
-            "retry_attempts": attempt,
-            "max_retries": max_retries,
-            "tokens": generation.tokens if hasattr(generation, 'tokens') and generation.tokens else None
-        }
+        # Check if both files exist
+        if not os.path.exists(csv1_path):
+            return {"error": f"File {csv1_path} not found"}
+        if not os.path.exists(csv2_path):
+            return {"error": f"File {csv2_path} not found"}
         
-        return {
-            "generation": generation,
-            "test_result": test_result,
-            "analytics": analytics
-        }
+        try:
+            # Load both CSV files
+            df1 = pd.read_csv(csv1_path)
+            df2 = pd.read_csv(csv2_path)
+            
+            # Basic comparison info
+            comparison_info = {
+                "file1": csv1_path,
+                "file2": csv2_path,
+                "file1_shape": df1.shape,
+                "file2_shape": df2.shape,
+                "file1_columns": df1.columns.tolist(),
+                "file2_columns": df2.columns.tolist(),
+                "columns_match": df1.columns.tolist() == df2.columns.tolist(),
+                "shapes_match": df1.shape == df2.shape
+            }
+            
+            # Get sample data for LLM analysis
+            sample_size = min(5, len(df1), len(df2))
+            sample1 = df1.head(sample_size).to_dict('records') if len(df1) > 0 else []
+            sample2 = df2.head(sample_size).to_dict('records') if len(df2) > 0 else []
+            
+            # Generate comparison code using LLM
+            comparison_prompt = f"""
+Generate Python code to compare two CSV files and calculate a similarity percentage (0-100%).
+
+FILE 1: {csv1_path}
+Columns: {df1.columns.tolist()}
+Shape: {df1.shape}
+Sample data: {sample1}
+
+FILE 2: {csv2_path}
+Columns: {df2.columns.tolist()}
+Shape: {df2.shape}
+Sample data: {sample2}
+
+Create code that:
+1. Loads both CSV files
+2. Compares structure (columns, data types, row counts)
+3. Compares data content (values, distributions)
+4. Calculates an overall similarity percentage
+5. Prints a detailed comparison report
+6. Saves the similarity score to 'similarity_result.txt'
+
+The similarity should consider:
+- Row count similarity (20% weight)
+- Actual data values (80% weight)
+
+Expected response format (JSON):
+{{
+    "code": "your complete standalone Python code here",
+    "explanation": "explanation of the comparison approach",
+    "requirements": ["pandas", "numpy"]
+}}
+"""
+            
+            comparison_generation = self.gemini_client.generate_code(comparison_prompt)
+            
+            # Execute comparison code
+            comparison_filename = "csv_comparison_code.py"
+            comparison_result = self.code_executor.execute_code(comparison_generation.code, comparison_filename)
+            
+            similarity_score = None
+            if comparison_result.success:
+                # Try to read similarity score from file
+                try:
+                    if os.path.exists('similarity_result.txt'):
+                        with open('similarity_result.txt', 'r') as f:
+                            content = f.read().strip()
+                            # Extract number from the content
+                            import re
+                            numbers = re.findall(r'\d+\.?\d*', content)
+                            if numbers:
+                                similarity_score = float(numbers[0])
+                except:
+                    pass
+            
+            return {
+                "success": True,
+                "comparison_info": comparison_info,
+                "comparison_generation": comparison_generation,
+                "comparison_result": comparison_result,
+                "similarity_score": similarity_score
+            }
+            
+        except Exception as e:
+            return {"error": f"CSV comparison failed: {str(e)}"}
+    
+    def copy_to_output_csv(self, source_file: str):
+        """Copy the selected CSV to output.csv for frontend"""
+        import shutil
+        try:
+            if os.path.exists(source_file):
+                shutil.copy2(source_file, "output.csv")
+                print(f"Copied {source_file} to output.csv")
+            else:
+                print(f"Warning: {source_file} not found, cannot copy to output.csv")
+        except Exception as e:
+            print(f"Error copying {source_file} to output.csv: {str(e)}")
+    
+    def compare_and_select_best_csv(self, original_task: str, generation1: CodeGeneration, generation2: CodeGeneration) -> Dict[str, Any]:
+        """Compare CSVs and if different, use LLM to select the best code"""
+        import pandas as pd
+        
+        csv1_path = "output_llm1.csv"
+        csv2_path = "output_llm2.csv"
+        
+        # Check if both files exist
+        if not os.path.exists(csv1_path) or not os.path.exists(csv2_path):
+            return {"error": "One or both CSV files not found"}
+        
+        try:
+            # Load and compare CSVs
+            df1 = pd.read_csv(csv1_path)
+            df2 = pd.read_csv(csv2_path)
+            
+            # Quick comparison - check if they're identical
+            are_identical = False
+            try:
+                are_identical = df1.equals(df2)
+            except:
+                are_identical = False
+            
+            if are_identical:
+                print("CSVs are identical. Using first result.")
+                return {
+                    "similarity_score": 100.0,
+                    "selected_llm": "llm1",
+                    "selected_file": csv1_path,
+                    "final_generation": generation1,
+                    "final_test_result": None,  # Will be filled by caller
+                    "reason": "CSVs are identical"
+                }
+            
+            print("CSVs are different. Using simple heuristics to select the best result...")
+            
+            # Simple programmatic selection based on data quality metrics
+            score1 = self.calculate_csv_quality_score(df1)
+            score2 = self.calculate_csv_quality_score(df2)
+            
+            # If scores are very close (within 1.0), use LLM to decide
+            if abs(score1 - score2) < 1.0:
+                print(f"Quality scores are very close ({score1:.2f} vs {score2:.2f}). Using LLM for final decision...")
+                return self.llm_compare_solutions(original_task, generation1, generation2, df1, df2, csv1_path, csv2_path)
+            
+            if score1 >= score2:
+                selected_llm = "llm1"
+                selected_file = csv1_path
+                final_generation = generation1
+                reason = f"LLM1 selected: Quality score {score1:.2f} vs {score2:.2f}"
+            else:
+                selected_llm = "llm2"
+                selected_file = csv2_path
+                final_generation = generation2
+                reason = f"LLM2 selected: Quality score {score2:.2f} vs {score1:.2f}"
+            
+            print(reason)
+            
+            return {
+                "similarity_score": None,  # Different CSVs
+                "selected_llm": selected_llm,
+                "selected_file": selected_file,
+                "final_generation": final_generation,
+                "final_test_result": None,  # Will be filled by caller
+                "reason": reason,
+                "quality_scores": {"llm1": score1, "llm2": score2}
+            }
+                
+        except Exception as e:
+            return {"error": f"Comparison failed: {str(e)}"}
+    
+    def calculate_csv_quality_score(self, df) -> float:
+        """Calculate a quality score for a CSV DataFrame"""
+        try:
+            score = 0.0
+            
+            # Row count score (more rows is better, up to a point)
+            row_count = len(df)
+            if row_count > 0:
+                score += min(row_count / 1000, 10.0)  # Max 10 points for rows
+            
+            # Column completeness score (fewer null values is better)
+            if row_count > 0:
+                null_ratio = df.isnull().sum().sum() / (len(df.columns) * row_count)
+                completeness_score = (1.0 - null_ratio) * 20.0  # Max 20 points
+                score += completeness_score
+            
+            # Data variety score (more unique values in key columns is better)
+            numeric_cols = df.select_dtypes(include=['number']).columns
+            if len(numeric_cols) > 0:
+                for col in numeric_cols[:3]:  # Check up to 3 numeric columns
+                    unique_ratio = df[col].nunique() / len(df) if len(df) > 0 else 0
+                    score += unique_ratio * 5.0  # Max 15 points total
+            
+            # Required columns score (having all 5 database columns)
+            required_cols = ['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct']
+            present_cols = sum(1 for col in required_cols if col in df.columns)
+            score += (present_cols / len(required_cols)) * 25.0  # Max 25 points
+            
+            # Data type appropriateness (numeric columns should be numeric)
+            type_score = 0
+            for col in ['Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct']:
+                if col in df.columns:
+                    if df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
+                        type_score += 10.0  # 10 points per correct numeric column
+            score += min(type_score, 30.0)  # Max 30 points
+            
+            return score
+            
+        except Exception as e:
+            print(f"Error calculating quality score: {e}")
+            return 0.0
+    
+    def llm_compare_solutions(self, original_task: str, generation1: CodeGeneration, generation2: CodeGeneration, 
+                            df1, df2, csv1_path: str, csv2_path: str) -> Dict[str, Any]:
+        """Use LLM to compare solutions when quality scores are too close"""
+        try:
+            # Get sample data for LLM analysis
+            sample_size = min(5, len(df1), len(df2))
+            sample1 = df1.head(sample_size).to_dict('records') if len(df1) > 0 else []
+            sample2 = df2.head(sample_size).to_dict('records') if len(df2) > 0 else []
+            
+            # Create selection prompt
+            selection_prompt = f"""
+You are an expert code reviewer. Two Python solutions for the same task have very similar quality scores. Analyze them and determine which is better.
+
+ORIGINAL TASK: {original_task}
+
+CODE SOLUTION 1:
+{generation1.code[:2000]}...
+
+RESULTING CSV 1:
+Columns: {df1.columns.tolist()}
+Shape: {df1.shape}
+Sample data: {sample1[:3]}
+
+CODE SOLUTION 2:
+{generation2.code[:2000]}...
+
+RESULTING CSV 2:
+Columns: {df2.columns.tolist()}
+Shape: {df2.shape}
+Sample data: {sample2[:3]}
+
+Choose the better solution considering correctness, data quality, and code practices.
+
+Respond with just the number: 1 or 2
+"""
+            
+            # Get LLM selection (simple response, not full code generation)
+            response = self.gemini_client.model.generate_content(selection_prompt)
+            selection_text = response.text.strip()
+            
+            # Parse simple response
+            if "2" in selection_text:
+                selected_solution = 2
+            else:
+                selected_solution = 1  # Default to 1
+            
+            if selected_solution == 1:
+                selected_llm = "llm1"
+                selected_file = csv1_path
+                final_generation = generation1
+            else:
+                selected_llm = "llm2"
+                selected_file = csv2_path
+                final_generation = generation2
+            
+            reason = f"LLM selected solution {selected_solution} (quality scores were too close)"
+            print(reason)
+            
+            return {
+                "similarity_score": None,
+                "selected_llm": selected_llm,
+                "selected_file": selected_file,
+                "final_generation": final_generation,
+                "final_test_result": None,
+                "reason": reason,
+                "llm_decision": selected_solution
+            }
+            
+        except Exception as e:
+            print(f"LLM comparison failed: {str(e)}. Using first result as fallback.")
+            return {
+                "similarity_score": None,
+                "selected_llm": "llm1",
+                "selected_file": csv1_path,
+                "final_generation": generation1,
+                "final_test_result": None,
+                "reason": f"LLM comparison failed: {str(e)}"
+            }
+    
+    def process_task_streaming(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2, progress_callback=None):
+        """Process task with streaming progress updates using parallel processing"""
+        
+        if progress_callback:
+            progress_callback(f"data: {json.dumps({'type': 'task_start', 'message': 'Starting parallel processing...'})}\n\n")
+        
+        if progress_callback:
+            progress_callback(f"data: {json.dumps({'type': 'parallel_start', 'message': 'Running 2 LLMs in parallel...'})}\n\n")
+        
+        # Use the parallel processing method
+        result = self.generate_and_execute_parallel(task, max_complete_restarts, max_error_attempts)
+        
+        if "error" in result:
+            if progress_callback:
+                progress_callback(f"data: {json.dumps({'type': 'error', 'message': result['error']})}\n\n")
+            return result
+        
+        # Update progress based on results
+        if result.get("both_succeeded"):
+            if progress_callback:
+                progress_callback(f"data: {json.dumps({'type': 'comparison_complete', 'message': 'Both LLMs succeeded. Comparison completed.'})}\n\n")
+        else:
+            if progress_callback:
+                selected_llm = result["analytics"]["generation_info"].get("selected_llm", "unknown")
+                progress_callback(f"data: {json.dumps({'type': 'single_success', 'message': f'One LLM succeeded: {selected_llm}'})}\n\n")
+        
+        return result
+
+    def process_task(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2) -> Dict[str, Any]:
+        """Process a complete task with parallel LLM processing"""
+        return self.generate_and_execute_parallel(task, max_complete_restarts, max_error_attempts)
     
     def run_interactive_mode(self):
         """Run interactive mode for testing tasks"""

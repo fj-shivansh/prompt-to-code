@@ -68,6 +68,12 @@ class PromptRefiner:
                         1. Calculations required
                         2. Output columns and what each should contain
 
+                        🚨 CRITICAL REQUIREMENT: The output CSV MUST ALWAYS contain these 5 database columns AS THE FIRST 5 COLUMNS:
+                        Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct
+                        
+                        Any additional calculated columns should come AFTER these 5 mandatory columns.
+                        DO NOT rename or exclude these 5 database columns - they are required for NAV calculations.
+
                         Focus ONLY on calculations and column mapping. 
                         Do NOT include extra instructions, handling missing data, or formatting advice.
                         User Request:
@@ -122,7 +128,8 @@ def generate_status_updates(original_prompt):
             return
         
         # Complete process with restart mechanism
-        max_complete_restarts = 2
+        max_complete_restarts = 1  # 1 restart (2 total attempts)
+        max_error_attempts = 2     # 2 error attempts (3 total per restart)
         complete_restart_attempt = 0
         
         while complete_restart_attempt <= max_complete_restarts:
@@ -163,10 +170,10 @@ def generate_status_updates(original_prompt):
                 
                 # Monkey patch the system's code executor to check for stop requests
                 original_execute = system.code_executor.execute_code
-                def tracked_execute(code):
+                def tracked_execute(code, filename=None):
                     if stop_requested:
                         return TestResult(success=False, result=None, execution_time=0, error="Processing stopped by user")
-                    return original_execute(code)
+                    return original_execute(code, filename)
                 
                 system.code_executor.execute_code = tracked_execute
                 # Create a queue to pass updates in real-time
@@ -182,7 +189,7 @@ def generate_status_updates(original_prompt):
                 
                 def run_processing():
                     try:
-                        result_container[0] = system.process_task_streaming(original_prompt, progress_callback=streaming_callback)
+                        result_container[0] = system.process_task_streaming(original_prompt, max_complete_restarts, max_error_attempts, progress_callback=streaming_callback)
                         update_queue.put("PROCESSING_COMPLETE")
                     except Exception as e:
                         update_queue.put(f"ERROR:{str(e)}")
@@ -249,7 +256,7 @@ def generate_status_updates(original_prompt):
                 yield f"data: {json.dumps({'type': 'attempt_success', 'message': f'Attempt {complete_restart_attempt} succeeded!', 'attempt': complete_restart_attempt, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                 
                 # Send final result
-                max_retries = result['analytics']['generation_info']['max_retries'] if 'analytics' in result and 'generation_info' in result['analytics'] else 3
+                max_retries = result['analytics']['generation_info']['max_retries'] if 'analytics' in result and 'generation_info' in result['analytics'] else (max_complete_restarts + 1) * (max_error_attempts + 1)
                 
                 response = {
                     'success': True,
@@ -288,7 +295,7 @@ def generate_status_updates(original_prompt):
                     yield f"data: {json.dumps({'type': 'restarting', 'message': f'Restarting... ({max_complete_restarts + 1 - complete_restart_attempt} attempts remaining)', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                     continue
                 else:
-                    max_retries = 3  # Default value for error calculation
+                    max_retries = (max_complete_restarts + 1) * (max_error_attempts + 1)  # Default value for error calculation
                     yield f"data: {json.dumps({'type': 'final_error', 'message': 'All attempts failed', 'total_attempts': complete_restart_attempt, 'total_retries': complete_restart_attempt * max_retries, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                     yield f"data: {json.dumps({'type': 'connection_close'})}\n\n"
                     return
@@ -328,7 +335,8 @@ def process_prompt():
     
     try:
         # Complete process with restart mechanism
-        max_complete_restarts = 2  # Allow 2 complete restarts (3 total attempts)
+        max_complete_restarts = 1  # Allow 1 complete restart (2 total attempts)
+        max_error_attempts = 2     # Allow 2 error attempts per restart (3 total per restart)
         complete_restart_attempt = 0
         
         while complete_restart_attempt <= max_complete_restarts:
@@ -340,7 +348,7 @@ def process_prompt():
             # Change to parent directory to execute task (for database access)
             original_cwd = os.getcwd()
             os.chdir('..')
-            result = system.process_task(original_prompt)
+            result = system.process_task(original_prompt, max_complete_restarts, max_error_attempts)
             os.chdir(original_cwd)
             
             # Check if this attempt was successful
@@ -386,7 +394,7 @@ def process_prompt():
         
         # Extract retry information from the analytics
         retry_attempts = result['analytics']['generation_info']['retry_attempts'] if 'generation_info' in result['analytics'] else 1
-        max_retries = result['analytics']['generation_info']['max_retries'] if 'generation_info' in result['analytics'] else 3
+        max_retries = result['analytics']['generation_info']['max_retries'] if 'generation_info' in result['analytics'] else (max_complete_restarts + 1) * (max_error_attempts + 1)
         
         response = {
             'success': True,
@@ -697,14 +705,15 @@ def generate_nav_graph(nav_df):
 def generate_condition_code(condition_prompt: str) -> str:
     """Generate Python code for condition evaluation using existing CSV data"""
     
-    # Get CSV headers information
+    # Get CSV headers information and actual column names
     csv_headers = ""
+    actual_columns = []
     output_csv_path = os.path.abspath('../output.csv')
     try:
         if os.path.exists(output_csv_path):
             df = pd.read_csv(output_csv_path)
-            columns_list = df.columns.tolist()
-            csv_headers = f"Available columns in output.csv: {', '.join(columns_list)}"
+            actual_columns = df.columns.tolist()
+            csv_headers = f"Available columns in output.csv: {', '.join(actual_columns)}"
             
             # Add sample data for better context
             if len(df) > 0:
@@ -713,8 +722,10 @@ def generate_condition_code(condition_prompt: str) -> str:
                 csv_headers += f"\n\nSample row for reference: {sample_values}"
         else:
             csv_headers = "Warning: output.csv not found. Assuming standard columns."
+            actual_columns = ["Date", "Ticker", "Adj_Close", "Daily_Gain_Pct", "Forward_Gain_Pct"]
     except Exception as e:
         csv_headers = f"Could not read output.csv headers: {str(e)}"
+        actual_columns = ["Date", "Ticker", "Adj_Close", "Daily_Gain_Pct", "Forward_Gain_Pct"]
     
     condition_prompt_template = f"""
 You are an expert Python developer and data analyst. Generate COMPLETE, STANDALONE Python code that:
@@ -723,7 +734,7 @@ You are an expert Python developer and data analyst. Generate COMPLETE, STANDALO
 2. Interprets the natural language condition: "{condition_prompt}"
 3. Maps the condition to the correct column names from the CSV
 4. Creates a new binary column called 'Signal' with values 1 (True) or 0 (False) based on the condition
-5. Saves the result to 'condition_output.csv' with ALL original database columns (Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct) plus the new Signal column
+5. Saves the result to 'condition_output.csv' with ALL original columns ({', '.join(actual_columns)}) plus the new Signal column
 
 CSV FILE INFO:
 {csv_headers}
@@ -748,19 +759,19 @@ IMPORTANT:
 - Handle missing values appropriately (treat as False for condition)  
 - Include pd.set_option('display.max_rows', None)
 - The condition should be evaluated row by row
-- 🚨 MANDATORY: Preserve ALL original database columns with EXACT names (Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct) in the final output
-- 🚨 DO NOT change column names: Use "Adj_Close" NOT "Close", "Ticker" NOT "Symbol", etc.
-- Save final result sorted by Date DESC (latest first)
+- 🚨 MANDATORY: Preserve ALL original columns with EXACT names ({', '.join(actual_columns)}) in the final output
+- 🚨 DO NOT change column names: Use the exact column names as they appear in the CSV
+- Save final result sorted by Date DESC (latest first) if Date column exists
 - If you can't find an exact column match, use the closest match and explain in the explanation
 - Use EXACT column names from the CSV headers listed above after mapping
 - The final condition_output.csv must contain all original columns plus the new Signal column
-- 🚨 CRITICAL: Final CSV must have columns in this exact order: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct, Signal
+- 🚨 CRITICAL: Final CSV must have columns in this exact order: {', '.join(actual_columns + ['Signal'])}
 
 🚨 MANDATORY TEMPLATE for final DataFrame:
 ```
 # EXACT column order and names required:
-final_df = df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', 'Signal']]
-final_df = final_df.sort_values('Date', ascending=False)
+final_df = df[{actual_columns + ['Signal']}]
+{'final_df = final_df.sort_values("Date", ascending=False)' if 'Date' in actual_columns else '# No Date column found, keeping original order'}
 final_df.to_csv('condition_output.csv', index=False)
 ```
 
@@ -1007,6 +1018,31 @@ def calculate_nav():
     except Exception as e:
         return jsonify({'error': f'NAV calculation failed: {str(e)}'}), 500
 
+@app.route('/api/compare_csv', methods=['POST'])
+def compare_csv():
+    """Compare the two generated CSV files and get similarity analysis"""
+    if not system:
+        return jsonify({
+            'error': 'System not initialized. Please set GEMINI_API_KEY environment variable.'
+        }), 500
+    
+    try:
+        # Change to parent directory to access CSV files
+        original_cwd = os.getcwd()
+        os.chdir('..')
+        
+        result = system.compare_csv_files()
+        
+        os.chdir(original_cwd)
+        
+        if "error" in result:
+            return jsonify({'error': result['error']}), 400
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({'error': f'CSV comparison failed: {str(e)}'}), 500
+
 @app.route('/api/health')
 def health_check():
     return jsonify({'status': 'healthy', 'system_ready': system is not None})
@@ -1014,4 +1050,15 @@ def health_check():
 if __name__ == '__main__':    
     # Use werkzeug directly to have more control over file watching
     run_simple('0.0.0.0', 5000, app, use_reloader=True, use_debugger=True,
-               extra_files=[], exclude_patterns=['**/generated_code.py','**/condition_generated_code.py'])
+               extra_files=[], exclude_patterns=[
+                   '**/generated_code.py',
+                   '**/condition_generated_code.py', 
+                   '**/generated_code_llm1.py',
+                   '**/generated_code_llm2.py',
+                   '**/csv_comparison_code.py',
+                   '**/output.csv',
+                   '**/output_llm1.csv',
+                   '**/output_llm2.csv',
+                   '**/condition_output.csv',
+                   '**/similarity_result.txt'
+               ])
