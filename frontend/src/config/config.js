@@ -42,13 +42,16 @@ const config = {
   nav: {
     defaultSettings: {
       initialAmount: 100000,
-      amountToInvest: 1
+      amountToInvest: 0.7,
+      maxPositionEachTicker: 0.2
     },
     limits: {
       minAmount: 1000,
       maxAmount: 10000000,
-      minInvestment: 0.1,
-      maxInvestment: 2.0
+      minInvestment: 0,
+      maxInvestment: 1.0,
+      minPosition: 0,
+      maxPosition: 1.0
     }
   },
   

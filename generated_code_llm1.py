@@ -11,47 +11,28 @@ import pandas as pd
 # Set pandas display options
 pd.set_option('display.max_rows', None)
 
-# Connect to the database
+# Connect to database and load ALL columns with EXACT names
 conn = sqlite3.connect('historical_data_with_gains.db')
-
-# Query the database
-query = """
-SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct
-FROM stock_data
-WHERE Adj_Close IS NOT NULL
-ORDER BY Ticker, Date
-"""
-df = pd.read_sql_query(query, conn)
+cursor = conn.cursor()
+cursor.execute('SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL')
+rows = cursor.fetchall()
 conn.close()
 
-# Calculate moving averages
-df['5_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=5, min_periods=1).mean().reset_index(0, drop=True)
-df['20_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=20, min_periods=1).mean().reset_index(0, drop=True)
+# Convert to DataFrame with EXACT column names (NOT Close, NOT Symbol)
+df = pd.DataFrame(rows, columns=['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct'])
 
-# Calculate positive daily gain count
-df['Positive_Day_Count'] = df.groupby('Ticker')['Daily_Gain_Pct'].rolling(window=5, min_periods=1).apply(lambda x: sum(x > 0), raw=False).reset_index(0, drop=True)
+# MANDATORY: Sort by Ticker and Date BEFORE any operations
+df = df.sort_values(['Ticker', 'Date'], ascending=[True, True])
 
-#Identify momentum stocks
-df['Momentum_Stock'] = ((df['5_Day_MA'] > df['20_Day_MA']) & (df['Positive_Day_Count'] >= 3)).astype(int)
+# Calculate 5-day moving average
+df['MA5'] = df.groupby('Ticker')['Adj_Close'].rolling(window=5, min_periods=1).mean().values
 
-# Calculate average daily gain over last 5 days
-df['Avg_Daily_Gain_5'] = df.groupby('Ticker')['Daily_Gain_Pct'].rolling(window=5, min_periods=1).mean().reset_index(0, drop=True)
-
-# Calculate momentum score
-df['Momentum_Score'] = ((df['5_Day_MA'] / df['20_Day_MA']) * df['Avg_Daily_Gain_5']) * df['Momentum_Stock']
-
-# Get top 25 momentum stocks
-top_25 = df.sort_values(by=['Momentum_Score'], ascending=False).groupby('Ticker').head(1).nlargest(25, 'Momentum_Score')
-
-# Ensure mandatory columns are first and in the correct order
+# CRITICAL: Final DataFrame MUST have EXACT column names in EXACT order
 db_columns = ['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct']
-calculated_columns = ['5_Day_MA', '20_Day_MA', 'Positive_Day_Count', 'Momentum_Stock', 'Avg_Daily_Gain_5', 'Momentum_Score']
-final_df = top_25[db_columns + calculated_columns]
+calculated_columns = ['MA5']
+final_df = df[db_columns + calculated_columns]
 
-#Sort by Date Descending
+# Sort by Date DESC (latest first) and save
 final_df = final_df.sort_values('Date', ascending=False)
-
-# Save to CSV
 final_df.to_csv('output_llm1.csv', index=False)
-
-print('Results saved to output_llm1.csv')
+print('Results saved to output_llm1.csv with EXACT database column names')

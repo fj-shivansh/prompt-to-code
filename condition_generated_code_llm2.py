@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""
+Generated Code Execution Module
+This file contains AI-generated code for execution.
+"""
+
+import pandas as pd
+
+df = pd.read_csv('output.csv')
+df['Signal'] = (df['MA5'] > 300).astype(int)
+df = df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', 'MA5', 'Signal']]
+df.to_csv('condition_output_llm2.csv', index=False)

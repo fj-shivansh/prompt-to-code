@@ -642,7 +642,7 @@ def stop_processing():
             'error': f'Failed to stop processing: {str(e)}'
         }), 500
 
-def calculate_nav_long_only(df,initial_amount=100000,amount_to_invest=1):
+def calculate_nav_long_only(df,initial_amount=100000,amount_to_invest=1,max_position_each_ticker=1):
 
     df['Date'] = pd.to_datetime(df['Date'])
 
@@ -659,7 +659,10 @@ def calculate_nav_long_only(df,initial_amount=100000,amount_to_invest=1):
         count = len(daily_df)
         if count > 0:
             total_forward_gain = daily_df['Forward_Gain_Pct'].sum()
-            avg_forward_gain = total_forward_gain / count
+            
+            percentage_of_each_ticker = 1/count
+            percentage_of_each_ticker = min(percentage_of_each_ticker,max_position_each_ticker)
+            avg_forward_gain = total_forward_gain*percentage_of_each_ticker
         else:
             avg_forward_gain = 0
         date_list.append(date)
@@ -702,93 +705,122 @@ def generate_nav_graph(nav_df):
     
     return graph_base64
 
-def generate_condition_code(condition_prompt: str) -> str:
+def generate_condition_code(condition_prompt: str, output_file: str = "condition_output.csv") -> str:
     """Generate Python code for condition evaluation using existing CSV data"""
     
     # Get CSV headers information and actual column names
     csv_headers = ""
     actual_columns = []
-    output_csv_path = os.path.abspath('../output.csv')
-    try:
-        if os.path.exists(output_csv_path):
-            df = pd.read_csv(output_csv_path)
-            actual_columns = df.columns.tolist()
-            csv_headers = f"Available columns in output.csv: {', '.join(actual_columns)}"
-            
-            # Add sample data for better context
-            if len(df) > 0:
-                sample_row = df.iloc[0].to_dict()
-                sample_values = {k: v for k, v in sample_row.items()}
-                csv_headers += f"\n\nSample row for reference: {sample_values}"
-        else:
-            csv_headers = "Warning: output.csv not found. Assuming standard columns."
-            actual_columns = ["Date", "Ticker", "Adj_Close", "Daily_Gain_Pct", "Forward_Gain_Pct"]
-    except Exception as e:
-        csv_headers = f"Could not read output.csv headers: {str(e)}"
+    
+    # Try multiple possible paths for output.csv
+    current_dir = os.getcwd()
+    print(f"Current working directory: {current_dir}")
+    
+    possible_paths = [
+        os.path.abspath('../output.csv'),
+        os.path.abspath('./output.csv'),
+        os.path.abspath('output.csv'),
+        os.path.join(current_dir, 'output.csv'),
+        os.path.join(current_dir, '..', 'output.csv')
+    ]
+    
+    print(f"Will try these paths for output.csv:")
+    for path in possible_paths:
+        print(f"  - {path} (exists: {os.path.exists(path)})")
+    
+    csv_found = False
+    for output_csv_path in possible_paths:
+        try:
+            print(f"Checking for CSV at: {output_csv_path}")
+            if os.path.exists(output_csv_path):
+                df = pd.read_csv(output_csv_path)
+                actual_columns = df.columns.tolist()
+                csv_headers = f"Available columns in output.csv: {', '.join(actual_columns)}"
+                
+                # Add sample data for better context
+                if len(df) > 0:
+                    sample_row = df.iloc[0].to_dict()
+                    sample_values = {k: v for k, v in sample_row.items()}
+                    csv_headers += f"\n\nSample row for reference: {sample_values}"
+                csv_found = True
+                print(f"CSV found at: {output_csv_path}")
+                print(f"Columns found: {actual_columns}")
+                break
+        except Exception as e:
+            print(f"Error reading CSV at {output_csv_path}: {str(e)}")
+            continue
+    
+    if not csv_found:
+        print("ERROR: Could not find output.csv at any expected location!")
+        print("Available files in current directory:")
+        try:
+            files = os.listdir(current_dir)
+            for f in files:
+                if f.endswith('.csv'):
+                    print(f"  - {f}")
+        except Exception as e:
+            print(f"  Error listing files: {e}")
+        
+        csv_headers = "ERROR: output.csv not found. Cannot determine available columns."
         actual_columns = ["Date", "Ticker", "Adj_Close", "Daily_Gain_Pct", "Forward_Gain_Pct"]
+        print(f"Using default columns: {actual_columns}")
     
     condition_prompt_template = f"""
-You are an expert Python developer and data analyst. Generate COMPLETE, STANDALONE Python code that:
+You are an expert Python developer. Generate CLEAN, EXECUTABLE Python code that:
 
-1. Reads the existing CSV file 'output.csv' (which contains calculated data from previous step)
-2. Interprets the natural language condition: "{condition_prompt}"
-3. Maps the condition to the correct column names from the CSV
-4. Creates a new binary column called 'Signal' with values 1 (True) or 0 (False) based on the condition
-5. Saves the result to 'condition_output.csv' with ALL original columns ({', '.join(actual_columns)}) plus the new Signal column
+1. Reads the CSV file 'output.csv'
+2. Interprets the condition: "{condition_prompt}"
+3. Creates a 'Signal' column (1 for True, 0 for False)
+4. Saves result to '{output_file}'
 
-CSV FILE INFO:
+AVAILABLE COLUMNS IN output.csv:
 {csv_headers}
 
-CONDITION INTERPRETATION GUIDELINES:
-- The user provided: "{condition_prompt}"
-- Map natural language terms to actual column names intelligently:
-  * "10 day moving average" → look for columns like "MA10", "10_day_MA", "10_day_moving_avg", etc.
-  * "5 day moving average" → look for columns like "MA5", "5_day_MA", "5_day_moving_avg", etc.
-  * "price" or "stock price" → likely "Adj_Close"
-  * "moving average", "MA", "average" → look for columns containing "MA", "avg", "average"
-  * Be flexible with column name matching - use fuzzy matching if needed
-- Convert natural language comparisons:
-  * "greater than", "higher than", "above" → >
-  * "less than", "lower than", "below" → <
-  * "equal to", "equals" → ==
-  * "greater than or equal", "at least" → >=
-  * "less than or equal", "at most" → <=
+🚨 CRITICAL: The available columns are EXACTLY: {actual_columns}
+🚨 DO NOT use any columns not in this list: {actual_columns}
+🚨 DO NOT assume columns like '10_Day_MA', '5_Day_MA', 'MA10', 'MA5' exist unless they are in the list above
 
-IMPORTANT:
-- Use pandas for all operations
-- Handle missing values appropriately (treat as False for condition)  
-- Include pd.set_option('display.max_rows', None)
-- The condition should be evaluated row by row
-- 🚨 MANDATORY: Preserve ALL original columns with EXACT names ({', '.join(actual_columns)}) in the final output
-- 🚨 DO NOT change column names: Use the exact column names as they appear in the CSV
-- Save final result sorted by Date DESC (latest first) if Date column exists
-- If you can't find an exact column match, use the closest match and explain in the explanation
-- Use EXACT column names from the CSV headers listed above after mapping
-- The final condition_output.csv must contain all original columns plus the new Signal column
-- 🚨 CRITICAL: Final CSV must have columns in this exact order: {', '.join(actual_columns + ['Signal'])}
+IMPORTANT CODE STYLE REQUIREMENTS:
+- Write CLEAN Python code suitable for programmatic execution
+- DO NOT include shebang lines (#!/usr/bin/env python3)
+- DO NOT include docstring headers or module comments
+- DO NOT use print() statements for user output
+- DO NOT use exit() or sys.exit()
+- DO NOT include try/except blocks for file operations
+- Write simple, direct pandas operations
+- Only import required libraries (pandas)
 
-🚨 MANDATORY TEMPLATE for final DataFrame:
-```
-# EXACT column order and names required:
-final_df = df[{actual_columns + ['Signal']}]
-{'final_df = final_df.sort_values("Date", ascending=False)' if 'Date' in actual_columns else '# No Date column found, keeping original order'}
-final_df.to_csv('condition_output.csv', index=False)
-```
+Required output format:
+- Must include ALL original columns: {actual_columns}
+- Plus new 'Signal' column
+- Final column order: {actual_columns + ['Signal']}
 
-Expected response format (JSON):
+Expected response (JSON):
 {{
-    "code": "your complete standalone Python code here as a string",
-    "explanation": "your step-by-step explanation here as a string, including how you mapped the natural language to column names",
-    "requirements": ["list", "of", "required", "packages", "if", "any"]
+    "code": "your complete Python code as string",
+    "explanation": "brief explanation",
+    "requirements": ["pandas"]
 }}
 
-NATURAL LANGUAGE CONDITION: {condition_prompt}
+CONDITION: {condition_prompt}
 """
 
     try:
+        # Log the full prompt being sent to the LLM
+        print("=" * 80)
+        print("CONDITION PROMPT BEING SENT TO LLM:")
+        print("=" * 80)
+        print(condition_prompt_template)
+        print("=" * 80)
+        
         # Reuse existing GeminiClient from the system
         if system and system.gemini_client:
             generation = system.gemini_client.generate_code(condition_prompt_template)
+            print("=" * 80)
+            print("LLM GENERATED CODE:")
+            print("=" * 80)
+            print(generation.code)
+            print("=" * 80)
             return generation
         else:
             raise ValueError("System not initialized")
@@ -815,81 +847,38 @@ def process_condition():
         return jsonify({'error': 'No output.csv found. Please run data generation first.'}), 400
     
     try:
-        # Implement retry mechanism like main code
-        max_retries = 3
-        generation = None
-        test_result = None
-        attempt = 0
-        error_context = None
+        # Use parallel processing for condition evaluation
+        original_cwd = os.getcwd()
+        os.chdir('..')
         
-        while attempt < max_retries:
-            attempt += 1
-            print(f"\n=== Condition Attempt {attempt}/{max_retries} ===")
-            
-            try:
-                # Generate condition evaluation code (with error context if retry)
-                if attempt == 1:
-                    generation = generate_condition_code(condition_prompt)
-                else:
-                    print(f"Retrying condition generation with error context: {error_context[:200]}...")
-                    # Add error context to condition prompt for retry
-                    retry_condition_prompt = f"{condition_prompt}\n\nPREVIOUS ATTEMPT FAILED WITH ERROR: {error_context}\n\nPlease fix the above error and try again."
-                    generation = generate_condition_code(retry_condition_prompt)
-                
-                # Install requirements if needed
-                if generation.requirements:
-                    if not system.code_executor.install_requirements(generation.requirements):
-                        error_context = 'Failed to install required packages'
-                        continue
-                
-                # Execute condition code
-                original_cwd = os.getcwd()
-                os.chdir('..')
-                
-                # Write condition code to separate file
-                condition_code_path = "condition_generated_code.py"
-                with open(condition_code_path, "w") as f:
-                    f.write(f'''#!/usr/bin/env python3
-"""
-Generated Condition Code Execution Module
-"""
-
-{generation.code}
-''')
-                
-                # Execute condition code
-                test_result = system.code_executor.execute_code(generation.code)
-                os.chdir(original_cwd)
-                
-                if test_result.success:
-                    print(f"=== Condition SUCCESS on attempt {attempt} ===")
-                    return jsonify({
-                        'success': True,
-                        'condition_prompt': condition_prompt,
-                        'code': generation.code,
-                        'explanation': generation.explanation,
-                        'requirements': generation.requirements or [],
-                        'result': test_result.result,
-                        'execution_time': test_result.execution_time,
-                        'retry_attempts': attempt,
-                        'max_retries': max_retries
-                    })
-                else:
-                    error_context = test_result.error
-                    print(f"=== Condition FAILED on attempt {attempt}: {error_context} ===")
-                    if attempt == max_retries:
-                        break
-                    
-            except Exception as e:
-                error_context = str(e)
-                print(f"=== Condition EXCEPTION on attempt {attempt}: {error_context} ===")
-                if attempt == max_retries:
-                    break
+        result = system.process_condition_parallel(condition_prompt, max_complete_restarts=1, max_error_attempts=2)
         
-        # All attempts failed
-        return jsonify({
-            'error': f'Condition processing failed after {max_retries} attempts. Final error: {error_context}'
-        }), 500
+        os.chdir(original_cwd)
+        
+        if "error" in result:
+            return jsonify({'error': result['error']}), 500
+        
+        # Extract retry information from the analytics
+        retry_attempts = result['analytics']['generation_info']['retry_attempts'] if 'analytics' in result and 'generation_info' in result['analytics'] else 1
+        max_retries = result['analytics']['generation_info']['max_retries'] if 'analytics' in result and 'generation_info' in result['analytics'] else 3
+        
+        response = {
+            'success': True,
+            'condition_prompt': condition_prompt,
+            'code': result['generation'].code,
+            'explanation': result['generation'].explanation,
+            'requirements': result['generation'].requirements or [],
+            'result': result['test_result'].result if result['test_result'].success else None,
+            'execution_time': result['test_result'].execution_time,
+            'retry_attempts': retry_attempts,
+            'max_retries': max_retries,
+            'parallel_mode': True,
+            'successful_llms': result['analytics']['generation_info'].get('successful_llms', 1),
+            'csvs_identical': result['analytics']['generation_info'].get('csvs_identical', False),
+            'analytics': result['analytics']
+        }
+        
+        return jsonify(response)
             
     except Exception as e:
         return jsonify({'error': f'Condition processing failed: {str(e)}'}), 500
@@ -965,6 +954,7 @@ def calculate_nav():
         data = request.get_json()
         initial_amount = data.get('initial_amount', 100000)
         amount_to_invest = data.get('amount_to_invest', 1)
+        max_position_each_ticker = data.get('max_position_each_ticker', 1)
         
         # Read condition CSV data
         df = pd.read_csv(csv_path)
@@ -979,7 +969,7 @@ def calculate_nav():
             }), 400
         
         # Calculate NAV
-        nav_df, annual_return, max_drawdown, ratio = calculate_nav_long_only(df, initial_amount, amount_to_invest)
+        nav_df, annual_return, max_drawdown, ratio = calculate_nav_long_only(df, initial_amount, amount_to_invest, max_position_each_ticker)
         
         if nav_df.empty:
             return jsonify({
@@ -1011,7 +1001,8 @@ def calculate_nav():
                 'max_drawdown': max_drawdown,
                 'ratio': ratio,
                 'total_signals': len(nav_data),
-                'investment_multiplier': amount_to_invest
+                'investment_multiplier': amount_to_invest,
+                'max_position_each_ticker': max_position_each_ticker
             }
         })
         
@@ -1052,7 +1043,8 @@ if __name__ == '__main__':
     run_simple('0.0.0.0', 5000, app, use_reloader=True, use_debugger=True,
                extra_files=[], exclude_patterns=[
                    '**/generated_code.py',
-                   '**/condition_generated_code.py', 
+                   '**/condition_generated_code_llm1.py', 
+                   '**/condition_generated_code_llm2.py',
                    '**/generated_code_llm1.py',
                    '**/generated_code_llm2.py',
                    '**/csv_comparison_code.py',

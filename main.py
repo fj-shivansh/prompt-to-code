@@ -474,24 +474,38 @@ class PromptToCodeSystem:
         self.generations = []
         self.test_results = []
     
-    def generate_and_execute_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2) -> Dict[str, Any]:
-        """Generate code with 2 parallel LLM calls and execute both with restart mechanism and CSV identity check"""
-        print(f"Starting parallel processing for task: {task}")
+    def parallel_process_generic(self, task: str, task_type: str = "prompt", max_complete_restarts: int = 1, max_error_attempts: int = 2) -> Dict[str, Any]:
+        """Generic parallel processing for both prompts and conditions"""
+        print(f"Starting parallel processing for {task_type}: {task}")
         
-        # Load data for analytics
-        print("Loading test data...")
-        data = self.db_manager.get_all_data()
-        data_stats = {
-            "total_records": len(data),
-            "unique_tickers": len(set(d["Ticker"] for d in data)),
-            "date_range": {
-                "start": min(d["Date"] for d in data),
-                "end": max(d["Date"] for d in data)
+        # Configure based on task type
+        if task_type == "condition":
+            output_file1 = "condition_output_llm1.csv"
+            output_file2 = "condition_output_llm2.csv"
+            final_output = "condition_output.csv"
+            filename_prefix = "condition_generated_code"
+        else:  # prompt
+            output_file1 = "output_llm1.csv"
+            output_file2 = "output_llm2.csv" 
+            final_output = "output.csv"
+            filename_prefix = "generated_code"
+        
+        # Load data for analytics (skip for condition processing)
+        data_stats = {}
+        if task_type == "prompt":
+            print("Loading test data...")
+            data = self.db_manager.get_all_data()
+            data_stats = {
+                "total_records": len(data),
+                "unique_tickers": len(set(d["Ticker"] for d in data)),
+                "date_range": {
+                    "start": min(d["Date"] for d in data),
+                    "end": max(d["Date"] for d in data)
+                }
             }
-        }
         
-        # Try up to 2 complete attempts to get identical CSVs
-        max_identity_attempts = 2
+        # Try up to 3 complete attempts to get identical CSVs
+        max_identity_attempts = 3
         for identity_attempt in range(max_identity_attempts):
             print(f"\n=== Identity Attempt {identity_attempt + 1}/{max_identity_attempts} ===")
             results = {"llm1": None, "llm2": None}
@@ -513,17 +527,35 @@ class PromptToCodeSystem:
                             total_attempt = complete_restart * (max_error_attempts + 1) + error_attempt
                             print(f"{llm_id} - Error attempt {error_attempt}/{max_error_attempts + 1} (total attempt {total_attempt})")
                             
-                            # Generate code with specific output file and error context for retries
-                            if error_attempt == 1:
-                                # First attempt of this complete restart (no error context)
-                                generation = self.gemini_client.generate_code(task, output_file=output_file)
+                            # Generate code based on task type
+                            if task_type == "condition":
+                                # Use condition generation logic - import here to avoid circular import
+                                import sys
+                                import os
+                                sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
+                                try:
+                                    from backend.app import generate_condition_code
+                                except ImportError:
+                                    # Fallback: create a simple condition code generator
+                                    def generate_condition_code(prompt, output_file="condition_output.csv"):
+                                        # Use the existing gemini client to generate condition code
+                                        return self.gemini_client.generate_code(f"Generate Python code to evaluate this condition on existing CSV data: {prompt}. Save to {output_file}")
+                                
+                                if error_attempt == 1:
+                                    generation = generate_condition_code(task, output_file)
+                                else:
+                                    retry_prompt = f"{task}\n\nPREVIOUS ATTEMPT FAILED WITH ERROR: {previous_error}\n\nPlease fix the above error and try again."
+                                    generation = generate_condition_code(retry_prompt, output_file)
                             else:
-                                # Retry attempt within same complete restart (with error context)
-                                print(f"{llm_id} - Retrying with error context from previous attempt")
-                                generation = self.gemini_client.generate_code(task, 
-                                                                            error_context=previous_error, 
-                                                                            failed_code=previous_code, 
-                                                                            output_file=output_file)
+                                # Use regular prompt generation
+                                if error_attempt == 1:
+                                    generation = self.gemini_client.generate_code(task, output_file=output_file)
+                                else:
+                                    print(f"{llm_id} - Retrying with error context from previous attempt")
+                                    generation = self.gemini_client.generate_code(task, 
+                                                                                error_context=previous_error, 
+                                                                                failed_code=previous_code, 
+                                                                                output_file=output_file)
                             
                             # Install requirements if needed
                             if generation.requirements:
@@ -532,7 +564,7 @@ class PromptToCodeSystem:
                                     continue
                             
                             # Execute code with specific filename
-                            filename = f"generated_code_{llm_id}.py"
+                            filename = f"{filename_prefix}_{llm_id}.py"
                             test_result = self.code_executor.execute_code(generation.code, filename)
                             
                             if test_result.success:
@@ -569,9 +601,9 @@ class PromptToCodeSystem:
             
             # Run both LLMs sequentially to avoid threading issues
             print("Running LLM1...")
-            process_llm("llm1", "output_llm1.csv")
+            process_llm("llm1", output_file1)
             print("Running LLM2...")  
-            process_llm("llm2", "output_llm2.csv")
+            process_llm("llm2", output_file2)
             
             # Check if both succeeded
             successful_results = [r for r in results.values() if r is not None]
@@ -579,8 +611,8 @@ class PromptToCodeSystem:
             if len(successful_results) == 2:
                 # Both succeeded, check if CSVs are identical
                 print("Both LLMs succeeded. Checking if CSV outputs are identical...")
-                csv1_path = "output_llm1.csv"
-                csv2_path = "output_llm2.csv"
+                csv1_path = output_file1
+                csv2_path = output_file2
                 
                 try:
                     import pandas as pd
@@ -596,7 +628,7 @@ class PromptToCodeSystem:
                         final_generation = results["llm1"]["generation"]
                         final_test_result = results["llm1"]["test_result"]
                         
-                        self.copy_to_output_csv(csv1_path)
+                        self.copy_to_output_csv(csv1_path, final_output)
                         
                         analytics = Analytics.analyze_results([final_generation], [final_test_result], data_stats)
                         analytics["generation_info"] = {
@@ -612,7 +644,8 @@ class PromptToCodeSystem:
                             "identity_attempts": identity_attempt + 1,
                             "max_identity_attempts": max_identity_attempts,
                             "csvs_identical": True,
-                            "selected_llm": "llm1"
+                            "selected_llm": "llm1",
+                            "task_type": task_type
                         }
                         
                         return {
@@ -621,7 +654,8 @@ class PromptToCodeSystem:
                             "analytics": analytics,
                             "parallel_results": results,
                             "csvs_identical": True,
-                            "identity_attempt": identity_attempt + 1
+                            "identity_attempt": identity_attempt + 1,
+                            "task_type": task_type
                         }
                     else:
                         print(f"CSVs are NOT identical on identity attempt {identity_attempt + 1}")
@@ -645,20 +679,20 @@ class PromptToCodeSystem:
         successful_results = [r for r in results.values() if r is not None]
         
         if len(successful_results) == 0:
-            return {"error": "Both LLM calls failed"}
+            return {"error": "Both LLM calls failed", "task_type": task_type}
         elif len(successful_results) == 1:
             # One succeeded, use it
             successful_result = successful_results[0]
             
             # Determine which LLM succeeded and copy its CSV to output.csv
             if results["llm1"] is not None:
-                selected_file = "output_llm1.csv"
+                selected_file = output_file1
                 selected_llm = "llm1"
             else:
-                selected_file = "output_llm2.csv" 
+                selected_file = output_file2
                 selected_llm = "llm2"
             
-            self.copy_to_output_csv(selected_file)
+            self.copy_to_output_csv(selected_file, final_output)
             
             analytics = Analytics.analyze_results([successful_result["generation"]], [successful_result["test_result"]], data_stats)
             analytics["generation_info"] = {
@@ -674,14 +708,16 @@ class PromptToCodeSystem:
                 "identity_attempts": max_identity_attempts,
                 "max_identity_attempts": max_identity_attempts,
                 "csvs_identical": False,
-                "selected_llm": selected_llm
+                "selected_llm": selected_llm,
+                "task_type": task_type
             }
             
             return {
                 "generation": successful_result["generation"],
                 "test_result": successful_result["test_result"],
                 "analytics": analytics,
-                "parallel_results": results
+                "parallel_results": results,
+                "task_type": task_type
             }
         else:
             # Both succeeded, now compare and choose the best one
@@ -703,10 +739,8 @@ class PromptToCodeSystem:
                     final_test_result = results["llm2"]["test_result"]
             
             # Copy the final result to output.csv for frontend
-            self.copy_to_output_csv(comparison_result.get("selected_file", "output_llm1.csv"))
+            self.copy_to_output_csv(comparison_result.get("selected_file", output_file1), final_output)
             
-            generations = [r["generation"] for r in successful_results]
-            test_results = [r["test_result"] for r in successful_results]
             analytics = Analytics.analyze_results([final_generation], [final_test_result], data_stats)
             analytics["generation_info"] = {
                 "retry_attempts": max(r["attempts"] for r in successful_results),
@@ -723,7 +757,8 @@ class PromptToCodeSystem:
                 "csvs_identical": False,
                 "comparison_performed": True,
                 "similarity_score": comparison_result.get("similarity_score"),
-                "selected_llm": comparison_result.get("selected_llm", "llm1")
+                "selected_llm": comparison_result.get("selected_llm", "llm1"),
+                "task_type": task_type
             }
             
             return {
@@ -732,9 +767,30 @@ class PromptToCodeSystem:
                 "analytics": analytics,
                 "parallel_results": results,
                 "comparison_result": comparison_result,
-                "both_succeeded": True
+                "both_succeeded": True,
+                "task_type": task_type
             }
-    
+
+    def generate_and_execute_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2) -> Dict[str, Any]:
+        """Generate code with 2 parallel LLM calls and execute both with restart mechanism and CSV identity check"""
+        return self.parallel_process_generic(task, "prompt", max_complete_restarts, max_error_attempts)
+
+    def process_condition_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2) -> Dict[str, Any]:
+        """Process condition with 2 parallel LLM calls and execute both with restart mechanism and CSV identity check"""
+        return self.parallel_process_generic(task, "condition", max_complete_restarts, max_error_attempts)
+
+    def copy_to_output_csv(self, source_file: str, destination_file: str = "output.csv"):
+        """Copy the selected CSV to the specified output file"""
+        import shutil
+        try:
+            if os.path.exists(source_file):
+                shutil.copy2(source_file, destination_file)
+                print(f"Copied {source_file} to {destination_file}")
+            else:
+                print(f"Warning: {source_file} not found, cannot copy to {destination_file}")
+        except Exception as e:
+            print(f"Error copying {source_file} to {destination_file}: {str(e)}")
+
     def compare_csv_files(self) -> Dict[str, Any]:
         """Compare the two generated CSV files and get similarity analysis"""
         import pandas as pd
@@ -835,18 +891,6 @@ Expected response format (JSON):
             
         except Exception as e:
             return {"error": f"CSV comparison failed: {str(e)}"}
-    
-    def copy_to_output_csv(self, source_file: str):
-        """Copy the selected CSV to output.csv for frontend"""
-        import shutil
-        try:
-            if os.path.exists(source_file):
-                shutil.copy2(source_file, "output.csv")
-                print(f"Copied {source_file} to output.csv")
-            else:
-                print(f"Warning: {source_file} not found, cannot copy to output.csv")
-        except Exception as e:
-            print(f"Error copying {source_file} to output.csv: {str(e)}")
     
     def compare_and_select_best_csv(self, original_task: str, generation1: CodeGeneration, generation2: CodeGeneration) -> Dict[str, Any]:
         """Compare CSVs and if different, use LLM to select the best code"""

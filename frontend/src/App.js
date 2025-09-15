@@ -478,7 +478,8 @@ function App() {
         },
         body: JSON.stringify({
           initial_amount: navSettings.initialAmount,
-          amount_to_invest: navSettings.amountToInvest
+          amount_to_invest: navSettings.amountToInvest,
+          max_position_each_ticker: navSettings.maxPositionEachTicker
         })
       });
 
@@ -608,6 +609,17 @@ function App() {
                         </div>
                       )}
 
+                      {result.analytics && result.analytics.generation_info.parallel_mode && (
+                        <div className="csv-analysis-summary">
+                          <div className="csv-analysis-header">
+                            <h4>📊 CSV Identical Analysis</h4>
+                            <span className={`csv-status ${result.analytics.generation_info.csvs_identical ? 'positive' : 'negative'}`}>
+                              {result.analytics.generation_info.csvs_identical ? '✓ CSVs are Identical' : '✗ CSVs are Different'}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
                       <DataTable
                         data={csvData}
                         columns={csvColumns}
@@ -706,6 +718,17 @@ function App() {
                         </div>
                       )}
 
+                      {conditionResult.analytics && conditionResult.parallel_mode && (
+                        <div className="csv-analysis-summary">
+                          <div className="csv-analysis-header">
+                            <h4>📊 CSV Identical Analysis</h4>
+                            <span className={`csv-status ${conditionResult.csvs_identical ? 'positive' : 'negative'}`}>
+                              {conditionResult.csvs_identical ? '✓ CSVs are Identical' : '✗ CSVs are Different'}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
                       <DataTable
                         data={conditionCsvData}
                         columns={conditionCsvColumns}
@@ -751,6 +774,28 @@ function App() {
                           <p>{conditionResult.explanation}</p>
                         </div>
                       )}
+
+                      {conditionResult.analytics && (
+                        <div className="analytics-section">
+                          <h3>Condition Process Analytics</h3>
+                          <div className="analytics-grid">
+                            <div className="metric-item">
+                              <span className="metric-label">Retry Attempts:</span>
+                              <span>{conditionResult.retry_attempts || 1}</span>
+                            </div>
+                            <div className="metric-item">
+                              <span className="metric-label">Parallel Mode:</span>
+                              <span>{conditionResult.parallel_mode ? '✓ Yes' : '✗ No'}</span>
+                            </div>
+                            {conditionResult.parallel_mode && (
+                              <div className="metric-item">
+                                <span className="metric-label">Successful LLMs:</span>
+                                <span>{conditionResult.successful_llms || 1}/2</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="no-condition-data">
@@ -782,7 +827,7 @@ function App() {
                             />
                           </label>
                           <label>
-                            Investment Multiplier:
+                            Investment Multiplier (0-1):
                             <input
                               type="number"
                               value={navSettings.amountToInvest}
@@ -792,6 +837,20 @@ function App() {
                               })}
                               min={config.nav.limits.minInvestment}
                               max={config.nav.limits.maxInvestment}
+                              step="0.1"
+                            />
+                          </label>
+                          <label>
+                            Max Position Each Ticker (0-1):
+                            <input
+                              type="number"
+                              value={navSettings.maxPositionEachTicker}
+                              onChange={(e) => setNavSettings({
+                                ...navSettings,
+                                maxPositionEachTicker: parseFloat(e.target.value) || config.nav.defaultSettings.maxPositionEachTicker
+                              })}
+                              min={config.nav.limits.minPosition}
+                              max={config.nav.limits.maxPosition}
                               step="0.1"
                             />
                           </label>
