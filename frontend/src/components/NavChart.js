@@ -1,8 +1,11 @@
-import React from 'react';
+import React, { useRef, useEffect, useMemo, useCallback } from 'react';
 import { Line } from 'react-chartjs-2';
 
-const NavChart = ({ navData, navMetrics, downloadNavCsv }) => {
-  const getChartData = () => {
+const NavChart = React.memo(({ navData, navMetrics, downloadNavCsv }) => {
+  const chartRef = useRef(null);
+  const isFirstRender = useRef(true);
+
+  const getChartData = useCallback(() => {
     if (!navData || navData.length === 0) return null;
 
     const dates = navData.map(item => {
@@ -23,17 +26,18 @@ const NavChart = ({ navData, navMetrics, downloadNavCsv }) => {
           fill: true,
           pointBackgroundColor: '#ff9800',
           pointBorderColor: '#fff',
-          pointBorderWidth: 1,
-          pointRadius: 1, // Small points to show all data
+          pointBorderWidth: 0,
+          pointRadius: 0, // Remove points for better performance
           pointHoverRadius: 4,
           pointHoverBackgroundColor: '#f57c00',
           pointHoverBorderWidth: 2,
         }
       ]
     };
-  };
+  }, [navData]);
 
-  const chartOptions = {
+  // Optimize chart options for performance
+  const chartOptions = useMemo(() => ({
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
@@ -105,22 +109,47 @@ const NavChart = ({ navData, navMetrics, downloadNavCsv }) => {
     },
     interaction: {
       intersect: false,
-      mode: 'index'
+      mode: 'nearest'
     },
-    animation: {
-      duration: 800,
+    // Disable animations after first render for better performance
+    animation: isFirstRender.current ? {
+      duration: 400,
       easing: 'easeOutCubic'
-    },
+    } : false,
     elements: {
       point: {
-        radius: 2,
-        hoverRadius: 6
+        radius: 0, // Remove points for better performance
+        hoverRadius: 4
       },
       line: {
-        tension: 0.2
+        tension: 0.1
       }
     }
-  };
+  }), [isFirstRender.current]);
+
+  // Cleanup effect to destroy chart on unmount and track first render
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+    }
+    
+    return () => {
+      if (chartRef.current && chartRef.current.chartInstance) {
+        chartRef.current.chartInstance.destroy();
+      }
+    };
+  }, []);
+
+  // Cleanup chart instance on data changes
+  useEffect(() => {
+    return () => {
+      if (chartRef.current && chartRef.current.chartInstance) {
+        chartRef.current.chartInstance.destroy();
+      }
+    };
+  }, [navData]);
+
+  const chartData = getChartData();
 
   return (
     <div className="nav-graph">
@@ -135,9 +164,14 @@ const NavChart = ({ navData, navMetrics, downloadNavCsv }) => {
           📥 Download CSV
         </button>
       </div>
-      {getChartData() ? (
+      {chartData ? (
         <div className="nav-chart-container">
-          <Line data={getChartData()} options={chartOptions} />
+          <Line 
+            ref={chartRef}
+            data={chartData} 
+            options={chartOptions} 
+            key={`chart-${navData?.length}`} // Force re-render on data change
+          />
         </div>
       ) : (
         <div className="nav-chart-placeholder">
@@ -146,6 +180,6 @@ const NavChart = ({ navData, navMetrics, downloadNavCsv }) => {
       )}
     </div>
   );
-};
+});
 
 export default NavChart;

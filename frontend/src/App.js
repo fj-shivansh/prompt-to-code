@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -442,8 +442,8 @@ function App() {
     setConditionLoading(false);
   };
 
-  // Helper function to format large numbers
-  const formatNumber = (num, isPercentage = false, isCurrency = false) => {
+  // Memoized helper function to format large numbers
+  const formatNumber = useCallback((num, isPercentage = false, isCurrency = false) => {
     if (num === undefined || num === null) return '0';
     
     const absNum = Math.abs(num);
@@ -464,39 +464,105 @@ function App() {
     }
     
     return `${sign}${isCurrency ? '$' : ''}${formattedValue}${isPercentage ? '%' : ''}`;
-  };
+  }, []);
+
+  // Add debouncing and prevent multiple simultaneous requests
+  const [navCalculationTimeout, setNavCalculationTimeout] = useState(null);
+  const lastNavRequest = useRef(null);
+
+  // Memoize expensive NAV metrics calculations with stable references
+  const memoizedNavMetrics = useMemo(() => navMetrics, [JSON.stringify(navMetrics)]);
+  const memoizedNavData = useMemo(() => navData, [JSON.stringify(navData)]);
+
+  // Use refs for input values to avoid re-renders
+  const initialAmountRef = useRef(null);
+  const amountToInvestRef = useRef(null);
+  const maxPositionRef = useRef(null);
+
+  // Initialize refs with current values
+  useEffect(() => {
+    if (initialAmountRef.current) initialAmountRef.current.value = navSettings.initialAmount;
+    if (amountToInvestRef.current) amountToInvestRef.current.value = navSettings.amountToInvest;
+    if (maxPositionRef.current) maxPositionRef.current.value = navSettings.maxPositionEachTicker;
+  }, [navSettings.initialAmount, navSettings.amountToInvest, navSettings.maxPositionEachTicker]);
+
+  // Get current values from refs when calculating NAV
+  const getCurrentNavSettings = useCallback(() => {
+    return {
+      initialAmount: parseFloat(initialAmountRef.current?.value) || config.nav.defaultSettings.initialAmount,
+      amountToInvest: parseFloat(amountToInvestRef.current?.value) || config.nav.defaultSettings.amountToInvest,
+      maxPositionEachTicker: parseFloat(maxPositionRef.current?.value) || config.nav.defaultSettings.maxPositionEachTicker
+    };
+  }, []);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (navCalculationTimeout) {
+        clearTimeout(navCalculationTimeout);
+      }
+    };
+  }, [navCalculationTimeout]);
 
   const calculateNav = async () => {
-    setNavLoading(true);
-    setNavError(null);
-
-    try {
-      const response = await fetch(`${config.api.baseUrl}/calculate_nav`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          initial_amount: navSettings.initialAmount,
-          amount_to_invest: navSettings.amountToInvest,
-          max_position_each_ticker: navSettings.maxPositionEachTicker
-        })
-      });
-
-      const data = await response.json();
-      
-      if (response.ok) {
-        setNavData(data.nav_data);
-        setNavMetrics(data.metrics);
-        setActiveTab(TAB_NAMES.NAV);
-      } else {
-        setNavError(data.error);
-      }
-    } catch (error) {
-      setNavError(`Failed to calculate NAV: ${error.message}`);
-    } finally {
-      setNavLoading(false);
+    // Prevent multiple simultaneous requests
+    if (navLoading) {
+      return;
     }
+
+    // Clear any existing timeout
+    if (navCalculationTimeout) {
+      clearTimeout(navCalculationTimeout);
+    }
+
+    // Debounce the request
+    const timeout = setTimeout(async () => {
+      setNavLoading(true);
+      setNavError(null);
+
+      // Generate a unique request ID to handle race conditions
+      const requestId = Date.now();
+      lastNavRequest.current = requestId;
+
+      try {
+        const response = await fetch(`${config.api.baseUrl}/calculate_nav`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            initial_amount: getCurrentNavSettings().initialAmount,
+            amount_to_invest: getCurrentNavSettings().amountToInvest,
+            max_position_each_ticker: getCurrentNavSettings().maxPositionEachTicker
+          })
+        });
+
+        const data = await response.json();
+        
+        // Only update state if this is still the latest request
+        if (requestId === lastNavRequest.current) {
+          if (response.ok) {
+            setNavData(data.nav_data);
+            setNavMetrics(data.metrics);
+            setActiveTab(TAB_NAMES.NAV);
+          } else {
+            setNavError(data.error);
+          }
+        }
+      } catch (error) {
+        // Only update error if this is still the latest request
+        if (requestId === lastNavRequest.current) {
+          setNavError(`Failed to calculate NAV: ${error.message}`);
+        }
+      } finally {
+        // Only update loading state if this is still the latest request
+        if (requestId === lastNavRequest.current) {
+          setNavLoading(false);
+        }
+      }
+    }, 300); // 300ms debounce
+
+    setNavCalculationTimeout(timeout);
   };
 
   const handlePageChange = (newPage) => {
@@ -815,12 +881,9 @@ function App() {
                           <label>
                             Initial Amount ($):
                             <input
+                              ref={initialAmountRef}
                               type="number"
-                              value={navSettings.initialAmount}
-                              onChange={(e) => setNavSettings({
-                                ...navSettings,
-                                initialAmount: parseFloat(e.target.value) || config.nav.defaultSettings.initialAmount
-                              })}
+                              defaultValue={navSettings.initialAmount}
                               min={config.nav.limits.minAmount}
                               max={config.nav.limits.maxAmount}
                               step="1000"
@@ -829,12 +892,9 @@ function App() {
                           <label>
                             Investment Multiplier (0-1):
                             <input
+                              ref={amountToInvestRef}
                               type="number"
-                              value={navSettings.amountToInvest}
-                              onChange={(e) => setNavSettings({
-                                ...navSettings,
-                                amountToInvest: parseFloat(e.target.value) || config.nav.defaultSettings.amountToInvest
-                              })}
+                              defaultValue={navSettings.amountToInvest}
                               min={config.nav.limits.minInvestment}
                               max={config.nav.limits.maxInvestment}
                               step="0.1"
@@ -843,12 +903,9 @@ function App() {
                           <label>
                             Max Position Each Ticker (0-1):
                             <input
+                              ref={maxPositionRef}
                               type="number"
-                              value={navSettings.maxPositionEachTicker}
-                              onChange={(e) => setNavSettings({
-                                ...navSettings,
-                                maxPositionEachTicker: parseFloat(e.target.value) || config.nav.defaultSettings.maxPositionEachTicker
-                              })}
+                              defaultValue={navSettings.maxPositionEachTicker}
                               min={config.nav.limits.minPosition}
                               max={config.nav.limits.maxPosition}
                               step="0.1"
@@ -872,7 +929,7 @@ function App() {
                       </div>
                     )}
                     
-                    {navMetrics && (
+                    {memoizedNavMetrics && (
                       <div className="nav-results">
                         <div className="nav-metrics-table">
                           <div className="metrics-summary">
@@ -885,11 +942,11 @@ function App() {
                                     <tbody>
                                       <tr>
                                         <td className="metric-label">Initial Amount</td>
-                                        <td className="metric-value">{formatNumber(navMetrics.initial_amount, false, true)}</td>
+                                        <td className="metric-value">{formatNumber(memoizedNavMetrics.initial_amount, false, true)}</td>
                                       </tr>
                                       <tr>
                                         <td className="metric-label">Final NAV</td>
-                                        <td className="metric-value">{formatNumber(navMetrics.final_nav, false, true)}</td>
+                                        <td className="metric-value">{formatNumber(memoizedNavMetrics.final_nav, false, true)}</td>
                                       </tr>
                                     </tbody>
                                   </table>
@@ -900,20 +957,20 @@ function App() {
                                     <tbody>
                                       <tr>
                                         <td className="metric-label">Annual Return</td>
-                                        <td className={`metric-value ${navMetrics.annual_return >= 0 ? 'positive' : 'negative'}`}>
-                                          {formatNumber(navMetrics.annual_return, true)}
+                                        <td className={`metric-value ${memoizedNavMetrics.annual_return >= 0 ? 'positive' : 'negative'}`}>
+                                          {formatNumber(memoizedNavMetrics.annual_return, true)}
                                         </td>
                                       </tr>
                                       <tr>
                                         <td className="metric-label">Max Drawdown</td>
                                         <td className="metric-value negative">
-                                          {formatNumber(-Math.abs(navMetrics.max_drawdown), true)}
+                                          {formatNumber(-Math.abs(memoizedNavMetrics.max_drawdown), true)}
                                         </td>
                                       </tr>
                                        <tr>
                                         <td className="metric-label">Ratio</td>
                                         <td className="metric-value">
-                                          {formatNumber(navMetrics.ratio)}
+                                          {formatNumber(memoizedNavMetrics.ratio)}
                                         </td>
                                       </tr>
                                     </tbody>
@@ -925,14 +982,14 @@ function App() {
                         </div>
                         
                         <NavChart 
-                          navData={navData}
-                          navMetrics={navMetrics}
-                          downloadNavCsv={() => downloadNavCsv(navData)}
+                          navData={memoizedNavData}
+                          navMetrics={memoizedNavMetrics}
+                          downloadNavCsv={() => downloadNavCsv(memoizedNavData)}
                         />
                       </div>
                     )}
                     
-                    {!navMetrics && !navLoading && (
+                    {!memoizedNavMetrics && !navLoading && (
                       <div className="nav-placeholder">
                         <p>📊 Calculate NAV to see portfolio performance analysis</p>
                         <p>This will use your condition results with Signal=1 to simulate trading performance.</p>
