@@ -55,7 +55,7 @@ class PromptRefiner:
                 raise ValueError("Gemini API key not provided")
             genai.configure(api_key=api_key)
         
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
     
     def refine_prompt(self, user_request: str) -> str:
         """
@@ -87,7 +87,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Get absolute path to database
-DB_PATH = os.path.abspath('../historical_data_with_gains.db')
+DB_PATH = os.path.abspath('../historical_data_500_tickers_with_gains.db')
 
 # Global variables for process management
 current_process = None
@@ -110,7 +110,7 @@ except ValueError as e:
     db_manager = DatabaseManager(DB_PATH)
     prompt_refiner = None
 
-def generate_status_updates(original_prompt):
+def generate_status_updates(original_prompt, filters=None):
     """Generator function for Server-Sent Events with detailed progress tracking"""
     global stop_requested, current_process
     
@@ -189,7 +189,7 @@ def generate_status_updates(original_prompt):
                 
                 def run_processing():
                     try:
-                        result_container[0] = system.process_task_streaming(original_prompt, max_complete_restarts, max_error_attempts, progress_callback=streaming_callback)
+                        result_container[0] = system.process_task_streaming(original_prompt, max_complete_restarts, max_error_attempts, progress_callback=streaming_callback, filters=filters)
                         update_queue.put("PROCESSING_COMPLETE")
                     except Exception as e:
                         update_queue.put(f"ERROR:{str(e)}")
@@ -310,11 +310,55 @@ def process_prompt_stream():
     data = request.get_json()
     original_prompt = data.get('prompt', '').strip()
     
+    # Extract filter parameters and pre-generate random tickers
+    ticker_count = data.get('ticker_count', '10')
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+    
+    # Pre-generate random tickers so both LLMs use the SAME set
+    selected_tickers = []
+    if ticker_count != 'all':
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # Get random tickers with date filtering
+            ticker_query = """
+                SELECT DISTINCT Ticker 
+                FROM stock_data 
+                WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL
+            """
+            ticker_params = []
+            
+            if start_date and end_date:
+                ticker_query += " AND Date >= ? AND Date <= ?"
+                ticker_params.extend([start_date, end_date])
+            
+            ticker_query += " ORDER BY RANDOM() LIMIT ?"
+            ticker_params.append(int(ticker_count))
+            
+            cursor.execute(ticker_query, ticker_params)
+            selected_tickers = [row[0] for row in cursor.fetchall()]
+            conn.close()
+            
+            print(f"Pre-generated {len(selected_tickers)} random tickers for both LLMs: {selected_tickers}")
+            
+        except Exception as e:
+            print(f"Error pre-generating tickers: {e}")
+            selected_tickers = []
+    
+    filters = {
+        'ticker_count': ticker_count,
+        'start_date': start_date,
+        'end_date': end_date,
+        'selected_tickers': selected_tickers  # Both LLMs will use these SAME tickers
+    }
+    
     if not original_prompt:
         return jsonify({'error': 'Prompt cannot be empty'}), 400
     
     def event_stream():
-        for update in generate_status_updates(original_prompt):
+        for update in generate_status_updates(original_prompt, filters):
             yield update
     
     return Response(event_stream(), mimetype='text/event-stream',
@@ -838,6 +882,48 @@ def process_condition():
     data = request.get_json()
     condition_prompt = data.get('condition', '').strip()
     
+    # Extract filter parameters and pre-generate random tickers
+    ticker_count = data.get('ticker_count', '10')
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+    
+    # Pre-generate random tickers so both LLMs use the SAME set
+    selected_tickers = []
+    if ticker_count != 'all':
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # Get random tickers with date filtering
+            ticker_query = """
+                SELECT DISTINCT Ticker 
+                FROM stock_data 
+                WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL
+            """
+            ticker_params = []
+            
+            if start_date and end_date:
+                ticker_query += " AND Date >= ? AND Date <= ?"
+                ticker_params.extend([start_date, end_date])
+            
+            ticker_query += " ORDER BY RANDOM() LIMIT ?"
+            ticker_params.append(int(ticker_count))
+            
+            cursor.execute(ticker_query, ticker_params)
+            selected_tickers = [row[0] for row in cursor.fetchall()]
+            conn.close()
+            
+        except Exception as e:
+            print(f"Error pre-generating tickers for condition: {e}")
+            selected_tickers = []
+    
+    filters = {
+        'ticker_count': ticker_count,
+        'start_date': start_date,
+        'end_date': end_date,
+        'selected_tickers': selected_tickers
+    }
+    
     if not condition_prompt:
         return jsonify({'error': 'Condition prompt cannot be empty'}), 400
     
@@ -1033,6 +1119,125 @@ def compare_csv():
         
     except Exception as e:
         return jsonify({'error': f'CSV comparison failed: {str(e)}'}), 500
+
+@app.route('/api/date_range')
+def get_available_date_range():
+    """Get min/max dates available in database"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT MIN(Date) as min_date, MAX(Date) as max_date 
+            FROM stock_data 
+            WHERE Adj_Close IS NOT NULL
+        """)
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        return jsonify({
+            'min_date': result[0],
+            'max_date': result[1]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/database_stats')
+def get_database_stats():
+    """Get database statistics for 500-ticker dataset"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Get total stats
+        cursor.execute("""
+            SELECT 
+                COUNT(DISTINCT Ticker) as total_tickers,
+                COUNT(*) as total_rows,
+                MIN(Date) as min_date,
+                MAX(Date) as max_date
+            FROM stock_data 
+            WHERE Adj_Close IS NOT NULL
+        """)
+        
+        stats = cursor.fetchone()
+        conn.close()
+        
+        return jsonify({
+            'total_tickers': stats[0],
+            'total_rows': stats[1],
+            'min_date': stats[2],
+            'max_date': stats[3],
+            'avg_rows_per_ticker': stats[1] // stats[0] if stats[0] > 0 else 0
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/random_tickers', methods=['POST'])
+def get_random_tickers():
+    """Optimized for 500-ticker database"""
+    data = request.get_json()
+    ticker_count = data.get('ticker_count', '10')  # Default to 10
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # First, get count of available tickers in date range
+        count_query = """
+            SELECT COUNT(DISTINCT Ticker) 
+            FROM stock_data 
+            WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL
+        """
+        count_params = []
+        
+        if start_date and end_date:
+            count_query += " AND Date >= ? AND Date <= ?"
+            count_params.extend([start_date, end_date])
+        
+        cursor.execute(count_query, count_params)
+        available_count = cursor.fetchone()[0]
+        
+        # Adjust ticker_count if requesting more than available
+        if ticker_count != 'all':
+            requested_count = int(ticker_count)
+            actual_count = min(requested_count, available_count)
+        else:
+            actual_count = available_count
+        
+        # Get random tickers efficiently
+        ticker_query = """
+            SELECT DISTINCT Ticker 
+            FROM stock_data 
+            WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL
+        """
+        ticker_params = []
+        
+        if start_date and end_date:
+            ticker_query += " AND Date >= ? AND Date <= ?"
+            ticker_params.extend([start_date, end_date])
+        
+        if ticker_count != 'all':
+            ticker_query += " ORDER BY RANDOM() LIMIT ?"
+            ticker_params.append(actual_count)
+        else:
+            ticker_query += " ORDER BY Ticker"
+        
+        cursor.execute(ticker_query, ticker_params)
+        tickers = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify({
+            'tickers': tickers,
+            'count': len(tickers),
+            'available_count': available_count,
+            'requested_count': ticker_count
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/health')
 def health_check():

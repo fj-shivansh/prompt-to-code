@@ -51,6 +51,16 @@ function App() {
   const [result, setResult] = useState(null);
   const [activeTab, setActiveTab] = useState(TAB_NAMES.RESULTS);
 
+  // Filter state for 500-ticker database
+  const [tickerCount, setTickerCount] = useState('10'); // Default to 10 tickers
+  
+  // Start with empty dates - will show as text inputs with placeholders
+  const [startDate, setStartDate] = useState(''); // Empty initially
+  const [endDate, setEndDate] = useState(''); // Empty initially
+  const [selectedTickers, setSelectedTickers] = useState([]);
+  const [totalAvailableTickers, setTotalAvailableTickers] = useState(500);
+  const [loadingFilters, setLoadingFilters] = useState(false);
+
   // Database data state
   const [databaseData, setDatabaseData] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
@@ -121,11 +131,20 @@ function App() {
   useEffect(() => {
     fetchTickers();
     fetchDatabaseData(1);
+    fetchDatabaseStats();
+    // Removed all automatic date fetching and setting
   }, []);
 
   useEffect(() => {
     fetchDatabaseData(1);
   }, [sortConfig, tickerFilter]);
+
+  // Remove the auto-updating ticker selection
+  // useEffect(() => {
+  //   if (startDate && endDate) {
+  //     updateTickerSelection();
+  //   }
+  // }, [tickerCount, startDate, endDate]);
 
   useEffect(() => {
     if (result && result.success) {
@@ -181,6 +200,39 @@ function App() {
     } catch (error) {
       console.error('Error fetching tickers:', error);
     }
+  };
+
+  const fetchDatabaseStats = async () => {
+    try {
+      const response = await fetch(`${config.api.baseUrl}/database_stats`);
+      const data = await response.json();
+      setTotalAvailableTickers(data.total_tickers || 500);
+    } catch (error) {
+      console.error('Error fetching database stats:', error);
+    }
+  };
+
+  const updateTickerSelection = async () => {
+    if (!startDate || !endDate) return;
+    
+    setLoadingFilters(true);
+    try {
+      const response = await fetch(`${config.api.baseUrl}/random_tickers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker_count: tickerCount,
+          start_date: startDate,
+          end_date: endDate
+        })
+      });
+      const data = await response.json();
+      setSelectedTickers(data.tickers || []);
+    } catch (error) {
+      console.error('Error selecting tickers:', error);
+      setSelectedTickers([]);
+    }
+    setLoadingFilters(false);
   };
 
   const fetchDatabaseData = async (page) => {
@@ -336,7 +388,13 @@ function App() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ 
+          prompt,
+          // Include filter data (no selected_tickers needed - handled in prompt)
+          ticker_count: tickerCount,
+          start_date: startDate,
+          end_date: endDate
+        }),
         signal: controller.signal,
       });
 
@@ -418,7 +476,13 @@ function App() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ condition: conditionPrompt }),
+        body: JSON.stringify({ 
+          condition: conditionPrompt,
+          // Include filter data for condition processing
+          ticker_count: tickerCount,
+          start_date: startDate,
+          end_date: endDate
+        }),
       });
 
       const data = await response.json();
@@ -603,6 +667,14 @@ function App() {
             loading={loading}
             isRefining={isRefining}
             canStop={canStop}
+            // Filter props
+            tickerCount={tickerCount}
+            setTickerCount={setTickerCount}
+            startDate={startDate}
+            setStartDate={setStartDate}
+            endDate={endDate}
+            setEndDate={setEndDate}
+            totalAvailableTickers={totalAvailableTickers}
           />
 
           <RefinedPrompt

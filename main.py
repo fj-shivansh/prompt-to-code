@@ -33,7 +33,7 @@ class CodeGeneration:
 
 
 class DatabaseManager:
-    def __init__(self, db_path: str = "historical_data_with_gains.db"):
+    def __init__(self, db_path: str = "historical_data_500_tickers_with_gains.db"):
         self.db_path = db_path
     
     def get_sample_data(self, limit: int = 100) -> List[Dict[str, Any]]:
@@ -63,6 +63,45 @@ class DatabaseManager:
             {"Date": row[0], "Ticker": row[1], "Adj_Close": row[2], "Daily_Gain_Pct": row[3], "Forward_Gain_Pct": row[4]}
             for row in rows
         ]
+    
+    def get_filtered_data(self, ticker_list=None, start_date=None, end_date=None) -> List[Dict[str, Any]]:
+        """Get filtered data based on tickers and date range"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct 
+            FROM stock_data 
+            WHERE Adj_Close IS NOT NULL 
+            AND Daily_Gain_Pct IS NOT NULL 
+            AND Forward_Gain_Pct IS NOT NULL
+        """
+        params = []
+        
+        if ticker_list:
+            placeholders = ','.join(['?' for _ in ticker_list])
+            query += f" AND Ticker IN ({placeholders})"
+            params.extend(ticker_list)
+        
+        if start_date:
+            query += " AND Date >= ?"
+            params.append(start_date)
+            
+        if end_date:
+            query += " AND Date <= ?"
+            params.append(end_date)
+        
+        query += " ORDER BY Ticker, Date"
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [
+            {"Date": row[0], "Ticker": row[1], "Adj_Close": row[2], 
+             "Daily_Gain_Pct": row[3], "Forward_Gain_Pct": row[4]}
+            for row in rows
+        ]
 
 
 class GeminiClient:
@@ -90,7 +129,7 @@ class GeminiClient:
         
         # Configure with the first API key
         genai.configure(api_key=self.api_keys[0])
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        self.model = genai.GenerativeModel('gemini-2.5-flash')
         print(f"Initialized GeminiClient with {len(self.api_keys)} API key(s)")
     
     def _rotate_api_key(self):
@@ -105,7 +144,7 @@ class GeminiClient:
         """Get info about current API key for debugging"""
         return f"Using API key {self.current_key_index + 1}/{len(self.api_keys)}"
     
-    def generate_code(self, task: str, error_context: Optional[str] = None, failed_code: Optional[str] = None, output_file: str = "output.csv") -> CodeGeneration:
+    def generate_code(self, task: str, error_context: Optional[str] = None, failed_code: Optional[str] = None, output_file: str = "output.csv", ticker_filters=None, date_filters=None) -> CodeGeneration:
         """Generate code for a given task using Gemini API with round-robin key rotation"""
         
         print(f"Generating code - {self._get_current_api_key_info()}")
@@ -139,7 +178,92 @@ IMPORTANT: You must complete the ORIGINAL TASK above. Focus on the task requirem
 
 """
 
-        prompt = f"""{error_section}🚨🚨🚨 CRITICAL REQUIREMENT: ALL 5 DATABASE COLUMNS MUST BE IN OUTPUT.CSV 🚨🚨🚨
+        # Build filter instruction
+        filter_instructions = ""
+        
+        if ticker_filters or date_filters:
+            filter_instructions = "\n🎯 DATA FILTERING REQUIREMENTS:\n"
+            
+            # Handle pre-selected tickers
+            selected_tickers = None
+            if ticker_filters and ticker_filters.get('selected_tickers'):
+                selected_tickers = ticker_filters['selected_tickers']
+                filter_instructions += f"📊 TICKER FILTER: Use ONLY these {len(selected_tickers)} pre-selected tickers: {', '.join(selected_tickers)}\n"
+                filter_instructions += f"🚨 DO NOT use random selection - use these EXACT tickers\n"
+            elif ticker_filters and ticker_filters.get('ticker_count') == 'all':
+                filter_instructions += f"📊 TICKER FILTER: Use ALL available tickers\n"
+            
+            if date_filters:
+                start_date = date_filters.get('start_date')
+                end_date = date_filters.get('end_date')
+                if start_date and end_date:
+                    filter_instructions += f"📅 DATE FILTER: Use ONLY data from {start_date} to {end_date}\n"
+                    filter_instructions += f"🚨 Add WHERE Date >= '{start_date}' AND Date <= '{end_date}' to your database query\n"
+            
+            filter_instructions += "\n"
+
+            # Add database query template with filters
+            query_template = """
+MANDATORY DATABASE QUERY TEMPLATE WITH FILTERS:
+```python
+conn = sqlite3.connect('historical_data_500_tickers_with_gains.db')
+cursor = conn.cursor()
+
+# Get data for specific tickers"""
+            
+            if selected_tickers:
+                query_template += f"""
+# Use pre-selected tickers
+selected_tickers = {selected_tickers}
+placeholders = ','.join(['?' for _ in selected_tickers])
+query = f"SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL AND Ticker IN ({{placeholders}})"
+params = selected_tickers
+"""
+            else:
+                query_template += f"""
+# Get all tickers
+query = "SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL"
+params = []
+"""
+            
+            if date_filters:
+                start_date = date_filters.get('start_date')
+                end_date = date_filters.get('end_date')
+                if start_date:
+                    query_template += f"""
+# Add date filters
+query += " AND Date >= ?"
+params.append('{start_date}')
+"""
+                if end_date:
+                    query_template += f"""
+query += " AND Date <= ?"
+params.append('{end_date}')
+"""
+            
+            query_template += """
+query += " ORDER BY Ticker, Date"
+cursor.execute(query, params)
+
+# Convert to DataFrame and ensure proper sorting
+rows = cursor.fetchall()
+conn.close()
+df = pd.DataFrame(rows, columns=['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct'])
+
+# MANDATORY: Sort by Ticker and Date for processing
+df = df.sort_values(['Ticker', 'Date'], ascending=[True, True])
+
+# ... perform your calculations here ...
+
+# MANDATORY: Final sort by Date DESC before saving
+final_df = final_df.sort_values('Date', ascending=False)
+final_df.to_csv('{output_file}', index=False)
+```
+🚨 YOU MUST USE THIS EXACT QUERY PATTERN AND SORTING 🚨
+"""
+            filter_instructions += query_template
+
+        prompt = f"""{error_section}{filter_instructions}🚨🚨🚨 CRITICAL REQUIREMENT: ALL 5 DATABASE COLUMNS MUST BE IN OUTPUT.CSV 🚨🚨🚨
 🚨🚨🚨 COLUMN NAMES MUST BE EXACTLY: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct 🚨🚨🚨
 🚨🚨🚨 THESE 5 COLUMNS MUST ALWAYS BE THE FIRST 5 COLUMNS IN YOUR OUTPUT CSV 🚨🚨🚨
 🚨🚨🚨 ANY ADDITIONAL COLUMNS MUST COME AFTER THESE 5 MANDATORY COLUMNS 🚨🚨🚨
@@ -153,7 +277,7 @@ IMPORTANT: You must complete the ORIGINAL TASK above. Focus on the task requirem
 🚨🚨🚨 KEEP ORIGINAL COLUMN NAMES: Daily_Gain_Pct, Forward_Gain_Pct 🚨🚨🚨
 🚨🚨🚨 IF YOU RENAME COLUMNS, THE SYSTEM WILL BREAK 🚨🚨🚨
 
-You have access to a SQLite database file called "historical_data_with_gains.db" with stock market data. The database has a table called "stock_data" with ONLY these 5 columns:
+You have access to a SQLite database file called "historical_data_500_tickers_with_gains.db" with stock market data. The database has a table called "stock_data" with ONLY these 5 columns:
 
 **AVAILABLE COLUMNS (ONLY THESE 5):**
 - Date: string, format "YYYY-MM-DD HH:MM:SS"
@@ -167,7 +291,7 @@ You have access to a SQLite database file called "historical_data_with_gains.db"
 IMPORTANT: 
 1. **DATABASE COLUMNS RESTRICTION**: You can ONLY use these 5 columns: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct. DO NOT reference any other columns (Open, High, Low, Close, Volume, etc.) as they do not exist and will cause "no such column" errors.
 2. Generate COMPLETE, STANDALONE Python code that can be executed directly
-3. Your code must load data from the SQLite database "historical_data_with_gains.db"
+3. Your code must load data from the SQLite database "historical_data_500_tickers_with_gains.db"
 4. Include all necessary imports (sqlite3, etc.)
 5. Do not use any type hints in function signatures
 6. If your solution requires external libraries (like pandas, numpy, matplotlib, etc.), please list all required packages in a "requirements" field. DO NOT include built-in modules like sqlite3, os, sys, time, json, etc.
@@ -187,10 +311,9 @@ interpret it as "today plus the previous (x-1) datapoints." If fewer than (x-1) 
 16. pd.set_option('display.max_rows', None) IS MANDATORY TO BE USED IF USING PANDAS
 17. **VARIABLE DEFINITIONS**: Always define all variables before using them. If a function needs parameters like 'window', make sure to define them or pass them as arguments. Avoid using undefined variables.
 18. **INDENTATION**: Use consistent 4-space indentation throughout. NO TABS. ALL lines at the same level must have identical indentation. Check for extra spaces before code lines.
-19. **DATE SORTING - MANDATORY**: When working with date-based data, you MUST ALWAYS sort the FINAL OUTPUT by Date in descending order (latest date first) unless explicitly specified otherwise. This applies to:
-   - SQL queries: Use ORDER BY Date DESC 
-   - Pandas DataFrames: Use df.sort_values('Date', ascending=False)
-   - Final CSV output: ALWAYS sort by Date DESC before saving to CSV
+19. 🚨🚨🚨 **MANDATORY SORTING REQUIREMENT**: The final output CSV MUST be sorted by Date in DESCENDING order (latest dates first). This is CRITICAL for consistent output across all LLMs.
+20. **SORTING ENFORCEMENT**: Before saving the final CSV with df.to_csv(), you MUST include this exact line: df = df.sort_values('Date', ascending=False). Both LLMs must produce identically sorted results.
+21. **DATE SORTING DETAILS**: When working with date-based data, the final output must be sorted by Date DESC (latest date first). Use df.sort_values('Date', ascending=False) right before df.to_csv().
    - Even if the task asks for "top N" or "highest/lowest" values, the final result should still be sorted by Date DESC
 🚨🚨🚨 MANDATORY DATA SORTING RULE - MUST BE DONE BEFORE ANY OPERATIONS 🚨🚨🚨
 🚨🚨🚨 ALWAYS SORT BY TICKER AND DATE BEFORE PERFORMING ANY CALCULATIONS 🚨🚨🚨
@@ -234,7 +357,7 @@ Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct
 
 EXAMPLE Expected response (JSON):
 {{
-    "code": "#!/usr/bin/env python3\\nimport sqlite3\\nimport pandas as pd\\n\\n# Set pandas display options\\npd.set_option('display.max_rows', None)\\n\\n# Connect to database and load ALL columns with EXACT names\\nconn = sqlite3.connect('historical_data_with_gains.db')\\ncursor = conn.cursor()\\ncursor.execute('SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL')\\nrows = cursor.fetchall()\\nconn.close()\\n\\n# Convert to DataFrame with EXACT column names (NOT Close, NOT Symbol)\\ndf = pd.DataFrame(rows, columns=['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct'])\\n\\n# MANDATORY: Sort by Ticker and Date BEFORE any operations\\ndf = df.sort_values(['Ticker', 'Date'], ascending=[True, True])\\n\\n# Calculate 10-day and 5-day moving averages for all tickers\\ndf['10_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=10, min_periods=1).mean().values\\ndf['5_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=5, min_periods=1).mean().values\\n\\n# CRITICAL: Final DataFrame MUST have EXACT column names in EXACT order\\nfinal_df = df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', '10_Day_MA', '5_Day_MA']].copy()\\n\\n# Sort by Date DESC (latest first) and save\\nfinal_df = final_df.sort_values('Date', ascending=False)\\nfinal_df.to_csv('{output_file}', index=False)\\nprint('Results saved to output.csv with EXACT database column names')",
+    "code": "#!/usr/bin/env python3\\nimport sqlite3\\nimport pandas as pd\\n\\n# Set pandas display options\\npd.set_option('display.max_rows', None)\\n\\n# Connect to database and load ALL columns with EXACT names\\nconn = sqlite3.connect('historical_data_500_tickers_with_gains.db')\\ncursor = conn.cursor()\\ncursor.execute('SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL AND Daily_Gain_Pct IS NOT NULL AND Forward_Gain_Pct IS NOT NULL')\\nrows = cursor.fetchall()\\nconn.close()\\n\\n# Convert to DataFrame with EXACT column names (NOT Close, NOT Symbol)\\ndf = pd.DataFrame(rows, columns=['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct'])\\n\\n# MANDATORY: Sort by Ticker and Date BEFORE any operations\\ndf = df.sort_values(['Ticker', 'Date'], ascending=[True, True])\\n\\n# Calculate 10-day and 5-day moving averages for all tickers\\ndf['10_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=10, min_periods=1).mean().values\\ndf['5_Day_MA'] = df.groupby('Ticker')['Adj_Close'].rolling(window=5, min_periods=1).mean().values\\n\\n# CRITICAL: Final DataFrame MUST have EXACT column names in EXACT order\\nfinal_df = df[['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', '10_Day_MA', '5_Day_MA']].copy()\\n\\n# MANDATORY: Sort by Date DESC (latest first) before saving\\nfinal_df = final_df.sort_values('Date', ascending=False)\\nfinal_df.to_csv('{output_file}', index=False)\\nprint('Results saved to output.csv with EXACT database column names and Date DESC sorting')",
     "explanation": "The code connects to the SQLite database and loads ALL 5 database columns with EXACT names (Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct), MANDATORILY sorts by Ticker and Date before any calculations, calculates moving averages, and saves the complete result to output.csv. CRITICAL: Uses exact database column names - 'Adj_Close' NOT 'Close', 'Ticker' NOT 'Symbol'. Final CSV has exact column order required.",
     "requirements": ["pandas"]
 }}
@@ -376,7 +499,7 @@ This file contains AI-generated code for execution.
                 self.process_callback(self.current_process)
             
             try:
-                stdout, stderr = self.current_process.communicate(timeout=120)
+                stdout, stderr = self.current_process.communicate(timeout=500)
                 result_returncode = self.current_process.returncode
             except subprocess.TimeoutExpired:
                 self.current_process.kill()
@@ -474,7 +597,7 @@ class PromptToCodeSystem:
         self.generations = []
         self.test_results = []
     
-    def parallel_process_generic(self, task: str, task_type: str = "prompt", max_complete_restarts: int = 1, max_error_attempts: int = 2) -> Dict[str, Any]:
+    def parallel_process_generic(self, task: str, task_type: str = "prompt", max_complete_restarts: int = 1, max_error_attempts: int = 2, filters=None) -> Dict[str, Any]:
         """Generic parallel processing for both prompts and conditions"""
         print(f"Starting parallel processing for {task_type}: {task}")
         
@@ -549,13 +672,56 @@ class PromptToCodeSystem:
                             else:
                                 # Use regular prompt generation
                                 if error_attempt == 1:
-                                    generation = self.gemini_client.generate_code(task, output_file=output_file)
+                                    # Build filter parameters
+                                    ticker_filters = None
+                                    date_filters = None
+                                    
+                                    if filters:
+                                        if filters.get('selected_tickers') or filters.get('ticker_count'):
+                                            ticker_filters = {
+                                                'selected_tickers': filters.get('selected_tickers', []),
+                                                'ticker_count': filters.get('ticker_count')
+                                            }
+                                        
+                                        if filters.get('start_date') or filters.get('end_date'):
+                                            date_filters = {
+                                                'start_date': filters.get('start_date'),
+                                                'end_date': filters.get('end_date')
+                                            }
+                                    
+                                    generation = self.gemini_client.generate_code(
+                                        task, 
+                                        output_file=output_file,
+                                        ticker_filters=ticker_filters,
+                                        date_filters=date_filters
+                                    )
                                 else:
                                     print(f"{llm_id} - Retrying with error context from previous attempt")
-                                    generation = self.gemini_client.generate_code(task, 
-                                                                                error_context=previous_error, 
-                                                                                failed_code=previous_code, 
-                                                                                output_file=output_file)
+                                    # Build filter parameters for retry
+                                    ticker_filters = None
+                                    date_filters = None
+                                    
+                                    if filters:
+                                        if filters.get('selected_tickers') or filters.get('ticker_count'):
+                                            ticker_filters = {
+                                                'selected_tickers': filters.get('selected_tickers', []),
+                                                'ticker_count': filters.get('ticker_count')
+                                            }
+                                        
+                                        if filters.get('start_date') or filters.get('end_date'):
+                                            date_filters = {
+                                                'start_date': filters.get('start_date'),
+                                                'end_date': filters.get('end_date')
+                                            }
+                                    
+                                    generation = self.gemini_client.generate_code(
+                                        task, 
+                                        error_context=previous_error, 
+                                        failed_code=previous_code, 
+                                        output_file=output_file,
+                                        ticker_filters=ticker_filters,
+                                        date_filters=date_filters
+                                    )
                             
                             # Install requirements if needed
                             if generation.requirements:
@@ -771,9 +937,9 @@ class PromptToCodeSystem:
                 "task_type": task_type
             }
 
-    def generate_and_execute_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2) -> Dict[str, Any]:
+    def generate_and_execute_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2, filters=None) -> Dict[str, Any]:
         """Generate code with 2 parallel LLM calls and execute both with restart mechanism and CSV identity check"""
-        return self.parallel_process_generic(task, "prompt", max_complete_restarts, max_error_attempts)
+        return self.parallel_process_generic(task, "prompt", max_complete_restarts, max_error_attempts, filters)
 
     def process_condition_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2) -> Dict[str, Any]:
         """Process condition with 2 parallel LLM calls and execute both with restart mechanism and CSV identity check"""
@@ -1084,7 +1250,7 @@ Respond with just the number: 1 or 2
                 "reason": f"LLM comparison failed: {str(e)}"
             }
     
-    def process_task_streaming(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2, progress_callback=None):
+    def process_task_streaming(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2, progress_callback=None, filters=None):
         """Process task with streaming progress updates using parallel processing"""
         
         if progress_callback:
@@ -1093,8 +1259,8 @@ Respond with just the number: 1 or 2
         if progress_callback:
             progress_callback(f"data: {json.dumps({'type': 'parallel_start', 'message': 'Running 2 LLMs in parallel...'})}\n\n")
         
-        # Use the parallel processing method
-        result = self.generate_and_execute_parallel(task, max_complete_restarts, max_error_attempts)
+        # Use the parallel processing method with filters
+        result = self.generate_and_execute_parallel(task, max_complete_restarts, max_error_attempts, filters)
         
         if "error" in result:
             if progress_callback:
