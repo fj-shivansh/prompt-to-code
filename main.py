@@ -313,6 +313,7 @@ interpret it as "today plus the previous (x-1) datapoints." If fewer than (x-1) 
 18. **INDENTATION**: Use consistent 4-space indentation throughout. NO TABS. ALL lines at the same level must have identical indentation. Check for extra spaces before code lines.
 19. 🚨🚨🚨 **MANDATORY SORTING REQUIREMENT**: The final output CSV MUST be sorted by Date in DESCENDING order (latest dates first). This is CRITICAL for consistent output across all LLMs.
 20. **SORTING ENFORCEMENT**: Before saving the final CSV with df.to_csv(), you MUST include this exact line: df = df.sort_values('Date', ascending=False). Both LLMs must produce identically sorted results.
+21. 🚨🚨🚨 **MANDATORY DATE FORMAT**: The Date column in the output CSV MUST be in the format "YYYY-MM-DD" (e.g., "2025-09-11"). DO NOT include timestamps or time portions (no "00:00:00"). Use this exact code to format dates: df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d'). This MUST be applied before saving the CSV to ensure both LLMs produce identical date formats.
 21. **DATE SORTING DETAILS**: When working with date-based data, the final output must be sorted by Date DESC (latest date first). Use df.sort_values('Date', ascending=False) right before df.to_csv().
    - Even if the task asks for "top N" or "highest/lowest" values, the final result should still be sorted by Date DESC
 🚨🚨🚨 MANDATORY DATA SORTING RULE - MUST BE DONE BEFORE ANY OPERATIONS 🚨🚨🚨

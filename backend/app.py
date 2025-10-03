@@ -50,19 +50,19 @@ class PromptRefiner:
                 if api_keys_str:
                     api_keys = [key.strip() for key in api_keys_str.split(',')]
                     api_key = api_keys[0]  # Use first key for refinement
-            
+
             if not api_key:
                 raise ValueError("Gemini API key not provided")
             genai.configure(api_key=api_key)
-        
+
         self.model = genai.GenerativeModel("gemini-2.5-flash")
-    
+
     def refine_prompt(self, user_request: str) -> str:
         """
         Refine a vague user request into a detailed, structured, production-ready prompt.
         """
         system_prompt = f"""
-                        You are an expert financial analyst and prompt engineer. 
+ You are an expert financial analyst and prompt engineer. 
                         Transform the following user request into a **concise, step-by-step instruction** specifying:
 
                         1. Calculations required
@@ -82,6 +82,72 @@ class PromptRefiner:
 
         response = self.model.generate_content(system_prompt)
         return response.text.strip()
+
+    def generate_condition_suggestions(self, columns: list, sample_data: dict = None) -> list:
+        """
+        Generate profitable trading condition suggestions based on available columns.
+        """
+        print(f"[generate_condition_suggestions] Called with {len(columns)} columns")
+        print(f"[generate_condition_suggestions] Columns: {columns}")
+        print(f"[generate_condition_suggestions] Sample data provided: {sample_data is not None}")
+
+        system_prompt = f"""
+You are an expert quantitative trading analyst. Based on the following CSV columns from a stock trading dataset, generate 5 PROFITABLE trading condition prompts that could be used to create signals for a trading strategy.
+
+Available Columns: {', '.join(columns)}
+Sample Data (first row): {sample_data if sample_data else 'Not available'}
+
+REQUIREMENTS:
+1. Each condition should be a clear, actionable trading rule
+2. Focus on conditions that have potential for profitability based on technical analysis
+3. Each condition should result in a Signal column (1 for True/Buy, 0 for False/No action)
+4. Be specific about thresholds and comparisons
+5. Return ONLY a JSON array of condition strings, no explanations
+
+IMPORTANT: The conditions should work with the available columns only. Don't reference columns that don't exist.
+
+Example format (return only the JSON array):
+[
+  "Create Signal=1 when RSI < 30 and Daily_Gain_Pct < -2, otherwise Signal=0",
+  "Create Signal=1 when MA_5 > MA_20 and volume is above average, otherwise Signal=0"
+]
+
+Generate 5 profitable condition prompts as a JSON array:
+"""
+
+        print(f"[generate_condition_suggestions] Sending request to Gemini...")
+        try:
+            response = self.model.generate_content(system_prompt)
+            print(f"[generate_condition_suggestions] Received response from Gemini")
+            print(f"[generate_condition_suggestions] Response text: {response.text[:200]}...")
+
+            import json
+            # Extract JSON from response
+            text = response.text.strip()
+            print(f"[generate_condition_suggestions] Looking for JSON array in response...")
+
+            # Try to find JSON array in the response
+            if '[' in text and ']' in text:
+                start = text.index('[')
+                end = text.rindex(']') + 1
+                json_str = text[start:end]
+                print(f"[generate_condition_suggestions] Extracted JSON: {json_str[:200]}...")
+
+                conditions = json.loads(json_str)
+                print(f"[generate_condition_suggestions] Successfully parsed {len(conditions)} conditions")
+                result = conditions[:5]  # Ensure max 5 conditions
+                print(f"[generate_condition_suggestions] Returning {len(result)} conditions")
+                return result
+            else:
+                print(f"[generate_condition_suggestions] WARNING: No JSON array found in response")
+                print(f"[generate_condition_suggestions] Full response: {text}")
+                return []
+        except Exception as e:
+            print(f"[generate_condition_suggestions] ERROR: {str(e)}")
+            print(f"[generate_condition_suggestions] Exception type: {type(e).__name__}")
+            import traceback
+            print(f"[generate_condition_suggestions] Traceback: {traceback.format_exc()}")
+            return []
 
 app = Flask(__name__)
 CORS(app)
@@ -261,9 +327,55 @@ def generate_status_updates(original_prompt, filters=None):
             if result and 'error' not in result and result.get('test_result') and result['test_result'].success:
                 yield f"data: {json.dumps({'type': 'attempt_success', 'message': f'Attempt {complete_restart_attempt} succeeded!', 'attempt': complete_restart_attempt, 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
                 
+                # Generate condition suggestions based on output CSV
+                suggested_conditions = []
+                if prompt_refiner:
+                    try:
+                        print("=" * 80)
+                        print("CONDITION SUGGESTIONS GENERATION START")
+                        print("=" * 80)
+                        yield f"data: {json.dumps({'type': 'generating_suggestions', 'message': 'Generating profitable condition suggestions...', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
+
+                        # Read output CSV to get columns
+                        output_csv_path = os.path.abspath('../output.csv')
+                        print(f"Looking for output CSV at: {output_csv_path}")
+                        print(f"CSV exists: {os.path.exists(output_csv_path)}")
+
+                        if os.path.exists(output_csv_path):
+                            print("Reading CSV file...")
+                            df = pd.read_csv(output_csv_path)
+                            columns = df.columns.tolist()
+                            sample_data = df.iloc[0].to_dict() if len(df) > 0 else None
+
+                            print(f"CSV columns: {columns}")
+                            print(f"Sample data: {sample_data}")
+                            print(f"Calling generate_condition_suggestions...")
+
+                            suggested_conditions = prompt_refiner.generate_condition_suggestions(columns, sample_data)
+
+                            print(f"Suggested conditions received: {suggested_conditions}")
+                            print(f"Number of suggestions: {len(suggested_conditions)}")
+
+                            yield f"data: {json.dumps({'type': 'suggestions_generated', 'message': f'Generated {len(suggested_conditions)} condition suggestions', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
+                        else:
+                            print(f"WARNING: output.csv not found at {output_csv_path}")
+                            yield f"data: {json.dumps({'type': 'suggestions_error', 'message': 'output.csv not found', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
+
+                        print("=" * 80)
+                        print("CONDITION SUGGESTIONS GENERATION END")
+                        print("=" * 80)
+                    except Exception as e:
+                        print(f"ERROR generating condition suggestions: {str(e)}")
+                        print(f"Exception type: {type(e).__name__}")
+                        import traceback
+                        print(f"Traceback: {traceback.format_exc()}")
+                        yield f"data: {json.dumps({'type': 'suggestions_error', 'message': f'Failed to generate suggestions: {str(e)}', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
+                else:
+                    print("WARNING: prompt_refiner is None, cannot generate suggestions")
+
                 # Send final result
                 max_retries = result['analytics']['generation_info']['max_retries'] if 'analytics' in result and 'generation_info' in result['analytics'] else (max_complete_restarts + 1) * (max_error_attempts + 1)
-                
+
                 response = {
                     'success': True,
                     'original_prompt': original_prompt,
@@ -285,7 +397,8 @@ def generate_status_updates(original_prompt, filters=None):
                     'analytics': result['analytics'],
                     'selected_tickers': selected_tickers,
                     'ticker_count': ticker_count,
-                    'date_range': {'start_date': start_date, 'end_date': end_date} if start_date and end_date else None
+                    'date_range': {'start_date': start_date, 'end_date': end_date} if start_date and end_date else None,
+                    'suggested_conditions': suggested_conditions
                 }
                 
                 yield f"data: {json.dumps({'type': 'final_result', 'data': response})}\n\n"
@@ -847,6 +960,16 @@ Required output format:
 - Must include ALL original columns: {actual_columns}
 - Plus new 'Signal' column
 - Final column order: {actual_columns + ['Signal']}
+
+🚨🚨🚨 MANDATORY DATE FORMAT REQUIREMENT 🚨🚨🚨:
+- The Date column MUST be in format "YYYY-MM-DD" (e.g., "2025-09-11")
+- DO NOT include timestamps or time portions (no "00:00:00")
+- Use this exact code before saving: df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+- This ensures both LLMs produce identical date formats
+
+🚨🚨🚨 MANDATORY SORTING REQUIREMENT 🚨🚨🚨:
+- The output CSV MUST be sorted by Date in DESCENDING order (latest first)
+- Use this exact code before saving: df = df.sort_values('Date', ascending=False)
 
 Expected response (JSON):
 {{

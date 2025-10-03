@@ -39,7 +39,26 @@ const ConditionSection = ({
       <p className="condition-description">
         Now that you have generated data, create conditions in natural language to add binary (0/1) columns based on your calculated values.
       </p>
-      
+
+      {result.suggested_conditions && result.suggested_conditions.length > 0 && (
+        <div className="suggested-conditions">
+          <h3>💡 Suggested Profitable Conditions</h3>
+          <p className="suggestions-hint">Click on any suggestion to use it:</p>
+          <div className="suggestions-list">
+            {result.suggested_conditions.map((condition, idx) => (
+              <div
+                key={idx}
+                className="suggestion-item"
+                onClick={() => setConditionPrompt(condition)}
+              >
+                <span className="suggestion-number">{idx + 1}</span>
+                <span className="suggestion-text">{condition}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <form onSubmit={handleConditionSubmit}>
         <div className="input-group">
           <label htmlFor="condition-prompt">Enter your condition in plain English:</label>
