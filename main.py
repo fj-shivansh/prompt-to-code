@@ -597,9 +597,12 @@ class PromptToCodeSystem:
         self.generations = []
         self.test_results = []
     
-    def parallel_process_generic(self, task: str, task_type: str = "prompt", max_complete_restarts: int = 1, max_error_attempts: int = 2, filters=None) -> Dict[str, Any]:
+    def parallel_process_generic(self, task: str, task_type: str = "prompt", max_complete_restarts: int = 1, max_error_attempts: int = 2, filters=None, progress_callback=None) -> Dict[str, Any]:
         """Generic parallel processing for both prompts and conditions"""
         print(f"Starting parallel processing for {task_type}: {task}")
+
+        if progress_callback:
+            progress_callback(f"data: {json.dumps({'type': 'parallel_init', 'message': f'Initializing parallel {task_type} processing...'})}\n\n")
         
         # Configure based on task type
         if task_type == "condition":
@@ -636,10 +639,14 @@ class PromptToCodeSystem:
             def process_llm(llm_id: str, output_file: str):
                 """Process single LLM generation and execution with complete restart mechanism"""
                 print(f"Starting {llm_id} processing...")
-                
+                if progress_callback:
+                    progress_callback(f"data: {json.dumps({'type': 'llm_processing', 'message': f'{llm_id.upper()} processing started', 'llm': llm_id})}\n\n")
+
                 # Complete restart loop
                 for complete_restart in range(max_complete_restarts + 1):  # +1 for initial attempt
                     print(f"{llm_id} - Complete restart {complete_restart + 1}/{max_complete_restarts + 1}")
+                    if progress_callback:
+                        progress_callback(f"data: {json.dumps({'type': 'llm_restart', 'message': f'{llm_id.upper()} restart {complete_restart + 1}/{max_complete_restarts + 1}', 'llm': llm_id, 'restart': complete_restart + 1})}\n\n")
                     
                     previous_error = None
                     previous_code = None
@@ -649,8 +656,12 @@ class PromptToCodeSystem:
                         try:
                             total_attempt = complete_restart * (max_error_attempts + 1) + error_attempt
                             print(f"{llm_id} - Error attempt {error_attempt}/{max_error_attempts + 1} (total attempt {total_attempt})")
-                            
+                            if progress_callback:
+                                progress_callback(f"data: {json.dumps({'type': 'llm_attempt', 'message': f'{llm_id.upper()} attempt {error_attempt}/{max_error_attempts + 1}', 'llm': llm_id, 'attempt': error_attempt, 'total_attempt': total_attempt})}\n\n")
+
                             # Generate code based on task type
+                            if progress_callback:
+                                progress_callback(f"data: {json.dumps({'type': 'llm_generating', 'message': f'{llm_id.upper()} generating code...', 'llm': llm_id})}\n\n")
                             if task_type == "condition":
                                 # Use condition generation logic - import here to avoid circular import
                                 import sys
@@ -725,15 +736,24 @@ class PromptToCodeSystem:
                             
                             # Install requirements if needed
                             if generation.requirements:
+                                if progress_callback:
+                                    progress_callback(f"data: {json.dumps({'type': 'llm_installing', 'message': f'{llm_id.upper()} installing requirements...', 'llm': llm_id})}\n\n")
                                 if not self.code_executor.install_requirements(generation.requirements):
                                     print(f"{llm_id} - Failed to install requirements on attempt {total_attempt}")
+                                    if progress_callback:
+                                        progress_callback(f"data: {json.dumps({'type': 'llm_install_failed', 'message': f'{llm_id.upper()} failed to install requirements', 'llm': llm_id})}\n\n")
                                     continue
-                            
+
                             # Execute code with specific filename
+                            if progress_callback:
+                                progress_callback(f"data: {json.dumps({'type': 'llm_executing', 'message': f'{llm_id.upper()} executing code...', 'llm': llm_id})}\n\n")
+
                             filename = f"{filename_prefix}_{llm_id}.py"
                             test_result = self.code_executor.execute_code(generation.code, filename)
-                            
+
                             if test_result.success:
+                                if progress_callback:
+                                    progress_callback(f"data: {json.dumps({'type': 'llm_success', 'message': f'{llm_id.upper()} succeeded on attempt {total_attempt}!', 'llm': llm_id, 'attempt': total_attempt})}\n\n")
                                 print(f"{llm_id} - Success on total attempt {total_attempt}!")
                                 results[llm_id] = {
                                     "generation": generation,
@@ -744,13 +764,17 @@ class PromptToCodeSystem:
                                 }
                                 return
                             else:
+                                if progress_callback:
+                                    progress_callback(f"data: {json.dumps({'type': 'llm_failed', 'message': f'{llm_id.upper()} failed on attempt {total_attempt}', 'llm': llm_id, 'error': test_result.error[:100]})}\n\n")
                                 print(f"{llm_id} - Failed on attempt {total_attempt}: {test_result.error}")
                                 # Store error context for next retry
                                 previous_error = test_result.error
                                 previous_code = generation.code
-                                
+
                         except Exception as e:
                             total_attempt = complete_restart * (max_error_attempts + 1) + error_attempt
+                            if progress_callback:
+                                progress_callback(f"data: {json.dumps({'type': 'llm_exception', 'message': f'{llm_id.upper()} exception on attempt {total_attempt}', 'llm': llm_id, 'error': str(e)[:100]})}\n\n")
                             print(f"{llm_id} - Exception on attempt {total_attempt}: {str(e)}")
                             # Store exception context for next retry
                             previous_error = str(e)
@@ -759,24 +783,44 @@ class PromptToCodeSystem:
                     
                     # All error attempts for this complete restart failed
                     if complete_restart < max_complete_restarts:
+                        if progress_callback:
+                            progress_callback(f"data: {json.dumps({'type': 'llm_restart_needed', 'message': f'{llm_id.upper()} restart {complete_restart + 1} failed, starting fresh...', 'llm': llm_id})}\n\n")
                         print(f"{llm_id} - Complete restart {complete_restart + 1} failed, starting fresh...")
                     else:
+                        if progress_callback:
+                            progress_callback(f"data: {json.dumps({'type': 'llm_all_restarts_failed', 'message': f'{llm_id.upper()} all restarts failed', 'llm': llm_id})}\n\n")
                         print(f"{llm_id} - All complete restarts failed")
-                
+
+                if progress_callback:
+                    progress_callback(f"data: {json.dumps({'type': 'llm_finished', 'message': f'{llm_id.upper()} finished (all attempts exhausted)', 'llm': llm_id, 'success': False})}\n\n")
                 print(f"{llm_id} - All attempts failed")
             
             # Run both LLMs in parallel using threads
             import threading
 
             print("Running LLM1 and LLM2 in parallel...")
+            if progress_callback:
+                progress_callback(f"data: {json.dumps({'type': 'llm_parallel_start', 'message': 'Starting LLM1 and LLM2 in parallel...', 'identity_attempt': identity_attempt + 1})}\n\n")
+
             thread1 = threading.Thread(target=lambda: process_llm("llm1", output_file1))
             thread2 = threading.Thread(target=lambda: process_llm("llm2", output_file2))
 
             thread1.start()
+            if progress_callback:
+                progress_callback(f"data: {json.dumps({'type': 'llm_started', 'message': 'LLM1 started', 'llm': 'llm1'})}\n\n")
+
             thread2.start()
+            if progress_callback:
+                progress_callback(f"data: {json.dumps({'type': 'llm_started', 'message': 'LLM2 started', 'llm': 'llm2'})}\n\n")
 
             thread1.join()
+            if progress_callback:
+                progress_callback(f"data: {json.dumps({'type': 'llm_completed', 'message': 'LLM1 completed', 'llm': 'llm1'})}\n\n")
+
             thread2.join()
+            if progress_callback:
+                progress_callback(f"data: {json.dumps({'type': 'llm_completed', 'message': 'LLM2 completed', 'llm': 'llm2'})}\n\n")
+
             print("Both LLMs completed")
             
             # Check if both succeeded
@@ -785,18 +829,23 @@ class PromptToCodeSystem:
             if len(successful_results) == 2:
                 # Both succeeded, check if CSVs are identical
                 print("Both LLMs succeeded. Checking if CSV outputs are identical...")
+                if progress_callback:
+                    progress_callback(f"data: {json.dumps({'type': 'csv_comparison_start', 'message': 'Both LLMs succeeded. Comparing CSV outputs...'})}\n\n")
+
                 csv1_path = output_file1
                 csv2_path = output_file2
-                
+
                 try:
                     import pandas as pd
                     df1 = pd.read_csv(csv1_path)
                     df2 = pd.read_csv(csv2_path)
-                    
+
                     # Check if CSVs are identical
                     are_identical = df1.equals(df2)
-                    
+
                     if are_identical:
+                        if progress_callback:
+                            progress_callback(f"data: {json.dumps({'type': 'csv_identical', 'message': f'CSVs are identical! (attempt {identity_attempt + 1})'})}\n\n")
                         print(f"SUCCESS! CSVs are identical on identity attempt {identity_attempt + 1}")
                         # Use the first result and mark as identical
                         final_generation = results["llm1"]["generation"]
@@ -832,11 +881,18 @@ class PromptToCodeSystem:
                             "task_type": task_type
                         }
                     else:
+                        if progress_callback:
+                            progress_callback(f"data: {json.dumps({'type': 'csv_not_identical', 'message': f'CSVs are NOT identical (attempt {identity_attempt + 1})'})}\n\n")
+
                         print(f"CSVs are NOT identical on identity attempt {identity_attempt + 1}")
                         if identity_attempt + 1 < max_identity_attempts:
+                            if progress_callback:
+                                progress_callback(f"data: {json.dumps({'type': 'retry_identity', 'message': f'Restarting for identity attempt {identity_attempt + 2}...'})}\n\n")
                             print(f"Restarting both LLMs for identity attempt {identity_attempt + 2}...")
                             continue
                         else:
+                            if progress_callback:
+                                progress_callback(f"data: {json.dumps({'type': 'identity_failed', 'message': 'Max identity attempts reached. Using comparison logic.'})}\n\n")
                             print("Maximum identity attempts reached. Falling back to comparison logic.")
                             break
                             
@@ -945,13 +1001,13 @@ class PromptToCodeSystem:
                 "task_type": task_type
             }
 
-    def generate_and_execute_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2, filters=None) -> Dict[str, Any]:
+    def generate_and_execute_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2, filters=None, progress_callback=None) -> Dict[str, Any]:
         """Generate code with 2 parallel LLM calls and execute both with restart mechanism and CSV identity check"""
-        return self.parallel_process_generic(task, "prompt", max_complete_restarts, max_error_attempts, filters)
+        return self.parallel_process_generic(task, "prompt", max_complete_restarts, max_error_attempts, filters, progress_callback)
 
-    def process_condition_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2) -> Dict[str, Any]:
+    def process_condition_parallel(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2, progress_callback=None) -> Dict[str, Any]:
         """Process condition with 2 parallel LLM calls and execute both with restart mechanism and CSV identity check"""
-        return self.parallel_process_generic(task, "condition", max_complete_restarts, max_error_attempts)
+        return self.parallel_process_generic(task, "condition", max_complete_restarts, max_error_attempts, None, progress_callback)
 
     def copy_to_output_csv(self, source_file: str, destination_file: str = "output.csv"):
         """Copy the selected CSV to the specified output file"""
@@ -1260,15 +1316,15 @@ Respond with just the number: 1 or 2
     
     def process_task_streaming(self, task: str, max_complete_restarts: int = 1, max_error_attempts: int = 2, progress_callback=None, filters=None):
         """Process task with streaming progress updates using parallel processing"""
-        
+
         if progress_callback:
             progress_callback(f"data: {json.dumps({'type': 'task_start', 'message': 'Starting parallel processing...'})}\n\n")
-        
+
         if progress_callback:
             progress_callback(f"data: {json.dumps({'type': 'parallel_start', 'message': 'Running 2 LLMs in parallel...'})}\n\n")
-        
-        # Use the parallel processing method with filters
-        result = self.generate_and_execute_parallel(task, max_complete_restarts, max_error_attempts, filters)
+
+        # Use the parallel processing method with filters and pass the callback
+        result = self.generate_and_execute_parallel(task, max_complete_restarts, max_error_attempts, filters, progress_callback)
         
         if "error" in result:
             if progress_callback:
