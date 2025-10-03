@@ -765,11 +765,19 @@ class PromptToCodeSystem:
                 
                 print(f"{llm_id} - All attempts failed")
             
-            # Run both LLMs sequentially to avoid threading issues
-            print("Running LLM1...")
-            process_llm("llm1", output_file1)
-            print("Running LLM2...")  
-            process_llm("llm2", output_file2)
+            # Run both LLMs in parallel using threads
+            import threading
+
+            print("Running LLM1 and LLM2 in parallel...")
+            thread1 = threading.Thread(target=lambda: process_llm("llm1", output_file1))
+            thread2 = threading.Thread(target=lambda: process_llm("llm2", output_file2))
+
+            thread1.start()
+            thread2.start()
+
+            thread1.join()
+            thread2.join()
+            print("Both LLMs completed")
             
             # Check if both succeeded
             successful_results = [r for r in results.values() if r is not None]
