@@ -113,7 +113,13 @@ except ValueError as e:
 def generate_status_updates(original_prompt, filters=None):
     """Generator function for Server-Sent Events with detailed progress tracking"""
     global stop_requested, current_process
-    
+
+    # Extract filter information for response
+    selected_tickers = filters.get('selected_tickers', []) if filters else []
+    ticker_count = filters.get('ticker_count', '10') if filters else '10'
+    start_date = filters.get('start_date') if filters else None
+    end_date = filters.get('end_date') if filters else None
+
     try:
         stop_requested = False
         yield f"data: {json.dumps({'type': 'init', 'message': 'Initializing...', 'timestamp': time.strftime('%H:%M:%S')})}\n\n"
@@ -276,7 +282,10 @@ def generate_status_updates(original_prompt, filters=None):
                     'execution_time': result['test_result'].execution_time,
                     'success_rate': result['analytics']['summary']['success_rate'],
                     'error': result['test_result'].error if not result['test_result'].success else None,
-                    'analytics': result['analytics']
+                    'analytics': result['analytics'],
+                    'selected_tickers': selected_tickers,
+                    'ticker_count': ticker_count,
+                    'date_range': {'start_date': start_date, 'end_date': end_date} if start_date and end_date else None
                 }
                 
                 yield f"data: {json.dumps({'type': 'final_result', 'data': response})}\n\n"
@@ -961,7 +970,10 @@ def process_condition():
             'parallel_mode': True,
             'successful_llms': result['analytics']['generation_info'].get('successful_llms', 1),
             'csvs_identical': result['analytics']['generation_info'].get('csvs_identical', False),
-            'analytics': result['analytics']
+            'analytics': result['analytics'],
+            'selected_tickers': selected_tickers,
+            'ticker_count': ticker_count,
+            'date_range': {'start_date': start_date, 'end_date': end_date} if start_date and end_date else None
         }
         
         return jsonify(response)

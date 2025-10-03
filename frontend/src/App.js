@@ -758,6 +758,22 @@ function App() {
                         </div>
                       )}
 
+                      {result.selected_tickers && result.selected_tickers.length > 0 && (
+                        <div className="selected-tickers-section">
+                          <h4>📊 Selected Tickers ({result.selected_tickers.length})</h4>
+                          <div className="tickers-list">
+                            {result.selected_tickers.map((ticker, idx) => (
+                              <span key={idx} className="ticker-badge">{ticker}</span>
+                            ))}
+                          </div>
+                          {result.date_range && (
+                            <div className="date-range-info">
+                              Date Range: {result.date_range.start_date} to {result.date_range.end_date}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       <DataTable
                         data={csvData}
                         columns={csvColumns}
@@ -864,6 +880,22 @@ function App() {
                               {conditionResult.csvs_identical ? '✓ CSVs are Identical' : '✗ CSVs are Different'}
                             </span>
                           </div>
+                        </div>
+                      )}
+
+                      {conditionResult.selected_tickers && conditionResult.selected_tickers.length > 0 && (
+                        <div className="selected-tickers-section">
+                          <h4>📊 Selected Tickers ({conditionResult.selected_tickers.length})</h4>
+                          <div className="tickers-list">
+                            {conditionResult.selected_tickers.map((ticker, idx) => (
+                              <span key={idx} className="ticker-badge">{ticker}</span>
+                            ))}
+                          </div>
+                          {conditionResult.date_range && (
+                            <div className="date-range-info">
+                              Date Range: {conditionResult.date_range.start_date} to {conditionResult.date_range.end_date}
+                            </div>
+                          )}
                         </div>
                       )}
 
