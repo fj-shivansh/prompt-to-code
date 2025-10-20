@@ -6,3 +6,17 @@ IMPLEMENTATION.md
 COMPLETE_SYSTEM_DOCUMENTATION.md
 frontend/MODULAR_STRUCTURE.md
 history_data_500_tickers_with_gains.db
+
+# Generated code files
+*generated_code*.py
+condition_generated_code*.py
+
+# CSV output files
+*.csv
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Database files
+*.db
