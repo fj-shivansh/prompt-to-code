@@ -43,7 +43,8 @@ const config = {
     defaultSettings: {
       initialAmount: 100000,
       amountToInvest: 0.7,
-      maxPositionEachTicker: 0.2
+      maxPositionEachTicker: 0.2,
+      traderCost: 0
     },
     limits: {
       minAmount: 1000,
@@ -51,7 +52,9 @@ const config = {
       minInvestment: 0,
       maxInvestment: 1.0,
       minPosition: 0,
-      maxPosition: 1.0
+      maxPosition: 1.0,
+      minTraderCost: 0,
+      maxTraderCost: 100
     }
   },
   

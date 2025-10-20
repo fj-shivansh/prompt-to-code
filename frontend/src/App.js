@@ -542,20 +542,23 @@ function App() {
   const initialAmountRef = useRef(null);
   const amountToInvestRef = useRef(null);
   const maxPositionRef = useRef(null);
+  const traderCostRef = useRef(null);
 
   // Initialize refs with current values
   useEffect(() => {
     if (initialAmountRef.current) initialAmountRef.current.value = navSettings.initialAmount;
     if (amountToInvestRef.current) amountToInvestRef.current.value = navSettings.amountToInvest;
     if (maxPositionRef.current) maxPositionRef.current.value = navSettings.maxPositionEachTicker;
-  }, [navSettings.initialAmount, navSettings.amountToInvest, navSettings.maxPositionEachTicker]);
+    if (traderCostRef.current) traderCostRef.current.value = navSettings.traderCost;
+  }, [navSettings.initialAmount, navSettings.amountToInvest, navSettings.maxPositionEachTicker, navSettings.traderCost]);
 
   // Get current values from refs when calculating NAV
   const getCurrentNavSettings = useCallback(() => {
     return {
       initialAmount: parseFloat(initialAmountRef.current?.value) || config.nav.defaultSettings.initialAmount,
       amountToInvest: parseFloat(amountToInvestRef.current?.value) || config.nav.defaultSettings.amountToInvest,
-      maxPositionEachTicker: parseFloat(maxPositionRef.current?.value) || config.nav.defaultSettings.maxPositionEachTicker
+      maxPositionEachTicker: parseFloat(maxPositionRef.current?.value) || config.nav.defaultSettings.maxPositionEachTicker,
+      traderCost: parseFloat(traderCostRef.current?.value) || config.nav.defaultSettings.traderCost
     };
   }, []);
 
@@ -597,7 +600,8 @@ function App() {
           body: JSON.stringify({
             initial_amount: getCurrentNavSettings().initialAmount,
             amount_to_invest: getCurrentNavSettings().amountToInvest,
-            max_position_each_ticker: getCurrentNavSettings().maxPositionEachTicker
+            max_position_each_ticker: getCurrentNavSettings().maxPositionEachTicker,
+            trader_cost: getCurrentNavSettings().traderCost
           })
         });
 
@@ -1013,6 +1017,17 @@ function App() {
                               min={config.nav.limits.minPosition}
                               max={config.nav.limits.maxPosition}
                               step="0.1"
+                            />
+                          </label>
+                          <label>
+                            Trader Cost Per Trade ($):
+                            <input
+                              ref={traderCostRef}
+                              type="number"
+                              defaultValue={navSettings.traderCost}
+                              min={config.nav.limits.minTraderCost}
+                              max={config.nav.limits.maxTraderCost}
+                              step="0.01"
                             />
                           </label>
                           <button
