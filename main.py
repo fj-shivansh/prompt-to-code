@@ -509,17 +509,24 @@ This file contains AI-generated code for execution.
             
             execution_time = time.time() - start_time
             
-            if result_returncode == 0:
+            # More robust success detection - check both return code and CSV file creation
+            expected_csv = filename.replace('.py', '.csv').replace('generated_code_', 'output_')
+            csv_exists = os.path.exists(expected_csv)
+            
+            # Consider success if return code is 0 OR None (and CSV was created)
+            is_successful = (result_returncode == 0) or (result_returncode is None and csv_exists)
+            
+            if is_successful:
                 # Debug logging
                 print(f"=== DEBUG: Code Execution Success ===")
                 print(f"STDOUT length: {len(stdout)}")
                 print(f"STDOUT content (first 500 chars): {stdout[:500]}")
                 print(f"STDOUT content (last 500 chars): {stdout[-500:]}")
                 
-                # Check if output.csv file was created
-                csv_file_path = "output.csv"
-                csv_exists = os.path.exists(csv_file_path)
+                # Check if expected CSV file was created
+                print(f"Expected CSV file: {expected_csv}")
                 print(f"CSV file exists: {csv_exists}")
+                print(f"Return code: {result_returncode}")
                 
                 # Return the full output instead of just the last line
                 full_output = stdout.strip()
