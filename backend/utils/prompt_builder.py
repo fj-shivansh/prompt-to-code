@@ -62,10 +62,17 @@ Complete the ORIGINAL TASK while fixing the error.
 
         filter_instructions += "```\n"
 
+    # Get absolute path to database - use project root (parent of backend/)
+    import os
+    current_file = os.path.abspath(__file__)
+    backend_dir = os.path.dirname(os.path.dirname(current_file))  # backend/
+    project_root = os.path.dirname(backend_dir)  # project root
+    db_path = os.path.join(project_root, 'historical_data_500_tickers_with_gains.db')
+
     prompt = f"""{error_section}{filter_instructions}Generate Python code for this task: {task}
 
 DATABASE INFO:
-- File: historical_data_500_tickers_with_gains.db
+- File: {db_path}
 - Table: stock_data
 - Columns: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct
 
@@ -77,7 +84,7 @@ Example database connection code:
 import sqlite3
 import pandas as pd
 
-conn = sqlite3.connect('historical_data_500_tickers_with_gains.db')
+conn = sqlite3.connect('{db_path}')
 cursor = conn.cursor()
 cursor.execute("SELECT Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct FROM stock_data WHERE Adj_Close IS NOT NULL")
 rows = cursor.fetchall()
@@ -90,10 +97,15 @@ CRITICAL REQUIREMENTS:
 1. MUST connect to database file and query real data (NO dummy/simulated data!)
 2. Output CSV MUST have these 5 columns FIRST: Date, Ticker, Adj_Close, Daily_Gain_Pct, Forward_Gain_Pct
 3. Save result as: {output_file}
-4. Sort by Ticker,Date before calculations: df.sort_values(['Ticker','Date'], ascending=[True,True])
-5. Sort by Date DESC before saving: df.sort_values('Date', ascending=False)
-6. Format dates: df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
-7. DO NOT include built-in modules in requirements (sqlite3, os, sys, time, json)
+4. Sort by Ticker,Date before calculations: df.sort_values(['Ticker','Date'], ascending=[True,True], inplace=True)
+5. Format dates: df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+6. Sort by Date DESC before saving: df = df.sort_values('Date', ascending=False) [NEVER use inplace=True here!]
+7. Select columns: df = df[column_list] [Create new assignment, don't modify in place]
+8. DO NOT include built-in modules in requirements (sqlite3, os, sys, time, json)
+
+⚠️ CRITICAL: When sorting or selecting columns after creating calculated columns, ALWAYS assign to a new variable or reassign to df. NEVER use inplace=True for the final sort before saving, as it can cause column reference issues.
+
+⚠️ PANDAS FILLNA REQUIREMENT: DO NOT use df['column'].fillna(value, inplace=True). Instead use: df['column'] = df['column'].fillna(value)
 
 CODE REQUIREMENTS:
 - Complete standalone Python code
@@ -102,6 +114,33 @@ CODE REQUIREMENTS:
 - Filter NULL values: WHERE Adj_Close IS NOT NULL
 - Configure pandas: pd.set_option('display.max_rows', None)
 - No type hints in function signatures
+
+CORRECT CODE PATTERN (follow this):
+```python
+# Step 1: Load data
+conn = sqlite3.connect('{db_path}')
+df = pd.read_sql_query(query, conn, params=params)
+conn.close()
+
+# Step 2: Sort by Ticker and Date BEFORE calculations
+df.sort_values(['Ticker', 'Date'], ascending=[True, True], inplace=True)
+
+# Step 3: Do your calculations (add calculated columns)
+df['My_Calculated_Column'] = ...
+
+# Step 4: Format dates
+df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+
+# Step 5: Sort by Date DESC (assign to variable, NO inplace!)
+df = df.sort_values('Date', ascending=False)
+
+# Step 6: Select columns (assign to variable, NO inplace!)
+output_columns = ['Date', 'Ticker', 'Adj_Close', 'Daily_Gain_Pct', 'Forward_Gain_Pct', 'My_Calculated_Column']
+df = df[output_columns]
+
+# Step 7: Save to CSV
+df.to_csv('{output_file}', index=False)
+```
 
 Return JSON format:
 {{

@@ -12,16 +12,18 @@ def generate_condition_code(condition_prompt: str, system, output_file: str = "c
     csv_headers = ""
     actual_columns = []
 
-    # Try multiple possible paths for output.csv
+    # EVERYTHING RUNS IN BACKEND FOLDER - READ FROM BACKEND!
     current_dir = os.getcwd()
     print(f"Current working directory: {current_dir}")
 
+    # Calculate backend directory
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     possible_paths = [
-        os.path.abspath('../output.csv'),
+        os.path.join(backend_dir, 'output.csv'),  # BACKEND FOLDER - HIGHEST PRIORITY!
         os.path.abspath('./output.csv'),
         os.path.abspath('output.csv'),
-        os.path.join(current_dir, 'output.csv'),
-        os.path.join(current_dir, '..', 'output.csv')
+        os.path.join(current_dir, 'output.csv')
     ]
 
     print(f"Will try these paths for output.csv:")
@@ -76,9 +78,24 @@ You are an expert Python developer. Generate CLEAN, EXECUTABLE Python code that:
 AVAILABLE COLUMNS IN output.csv:
 {csv_headers}
 
-🚨 CRITICAL: The available columns are EXACTLY: {actual_columns}
-🚨 DO NOT use any columns not in this list: {actual_columns}
-🚨 DO NOT assume columns like '10_Day_MA', '5_Day_MA', 'MA10', 'MA5' exist unless they are in the list above
+🚨🚨🚨 CRITICAL COLUMN RESTRICTION 🚨🚨🚨
+The ONLY columns available in output.csv are: {actual_columns}
+
+YOU MUST ONLY USE THESE EXACT COLUMN NAMES: {actual_columns}
+
+🚨 DO NOT use column names like:
+   - 'MA_10_Day' or 'MA_5_Day' (unless they appear in the list above)
+   - '10_Day_MA' or '5_Day_MA' (unless they appear in the list above)
+   - 'MA10', 'MA5', 'SMA_10', 'SMA_5' (unless they appear in the list above)
+   - 'RSI', 'MACD', 'Volume' (unless they appear in the list above)
+
+🚨 If the condition asks for a column that doesn't exist:
+   - Check the available columns list above
+   - Use the closest matching column name from the list
+   - If no matching column exists, create a simple condition using only available columns
+
+EXAMPLE: If condition asks for "MA_5_Day" but only "5_Day_MA" exists, use "5_Day_MA"
+EXAMPLE: If condition asks for "Volume" but it doesn't exist, use Daily_Gain_Pct instead
 
 IMPORTANT CODE STYLE REQUIREMENTS:
 - Write CLEAN Python code suitable for programmatic execution

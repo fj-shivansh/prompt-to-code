@@ -23,6 +23,7 @@ from backend.database.manager import DatabaseManager
 # Import services
 from backend.services.prompt_refiner import PromptRefiner
 from backend.services.nav_calculator import NAVCalculator
+from backend.services.strategy_optimizer import StrategyOptimizer
 
 # Import utils
 from backend.utils.process_manager import ProcessManager
@@ -46,6 +47,12 @@ try:
     prompt_refiner = PromptRefiner()
     nav_calculator = NAVCalculator()
     process_manager = ProcessManager()
+    strategy_optimizer = StrategyOptimizer(
+        gemini_client=system.gemini_client,
+        code_executor=system.code_executor,
+        prompt_refiner=prompt_refiner,
+        system=system
+    )
 
     print("✓ All components initialized successfully")
 
@@ -56,6 +63,7 @@ except ValueError as e:
     prompt_refiner = None
     nav_calculator = NAVCalculator()
     process_manager = ProcessManager()
+    strategy_optimizer = None  # Cannot initialize without system
 
 
 # Import and initialize routes
@@ -64,12 +72,15 @@ from backend.routes.prompt_routes import init_prompt_routes
 from backend.routes.database_routes import init_database_routes
 from backend.routes.condition_routes import init_condition_routes
 from backend.routes.nav_routes import init_nav_routes
+from backend.routes.optimization_routes import init_optimization_routes
 
 # Initialize route dependencies
 init_prompt_routes(system, prompt_refiner, process_manager)
 init_database_routes(db_manager)
 init_condition_routes(system, db_manager)
 init_nav_routes(nav_calculator)
+if strategy_optimizer:
+    init_optimization_routes(strategy_optimizer)
 
 # Register all blueprints
 register_routes(app)

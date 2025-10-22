@@ -28,7 +28,7 @@ class PromptRefiner:
                 raise ValueError("Gemini API key not provided")
             genai.configure(api_key=api_key)
 
-        self.model = genai.GenerativeModel("gemini-2.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
     def refine_prompt(self, user_request: str) -> str:
         """Refine a vague user request into a detailed, structured prompt"""

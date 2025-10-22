@@ -36,7 +36,12 @@ class Settings:
         '**/output_llm1.csv',
         '**/output_llm2.csv',
         '**/condition_output.csv',
-        '**/similarity_result.txt'
+        '**/similarity_result.txt',
+        '**/generated_code_opt_iter*.py',
+        '**/condition_generated_code_opt_iter*.py',
+        '**/output_opt_iter*.csv',
+        '**/condition_output_opt_iter*.csv',
+        '**/strategy_optimization.db'
     ]
 
     @classmethod
