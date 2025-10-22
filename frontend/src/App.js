@@ -19,6 +19,8 @@ import ConditionSection from './components/ConditionSection';
 import StatusSection from './components/StatusSection';
 import DataTable from './components/DataTable';
 import NavChart from './components/NavChart';
+import OptimizationPanel from './components/OptimizationPanel';
+import StrategyResultsTable from './components/StrategyResultsTable';
 
 // Hooks
 import useCsvData from './hooks/useCsvData';
@@ -32,6 +34,7 @@ import { TAB_NAMES, config } from './utils/constants';
 import './App.css';
 import './styles/components.css';
 import './styles/layout.css';
+import './styles/optimization.css';
 
 ChartJS.register(
   CategoryScale,
@@ -95,6 +98,13 @@ function App() {
   const [navLoading, setNavLoading] = useState(false);
   const [navError, setNavError] = useState(null);
   const [navSettings, setNavSettings] = useState(config.nav.defaultSettings);
+
+  // Optimization state
+  const [optimizationRunId, setOptimizationRunId] = useState(null);
+  const [optimizationRunning, setOptimizationRunning] = useState(false);
+  const [optimizationStatus, setOptimizationStatus] = useState(null);
+  const [optimizationResults, setOptimizationResults] = useState([]);
+  const [optimizationError, setOptimizationError] = useState(null);
 
   // Toast state
   const [toastMessage, setToastMessage] = useState('');
@@ -633,6 +643,105 @@ function App() {
     setNavCalculationTimeout(timeout);
   };
 
+  // Optimization handlers
+  const startOptimization = async (iterations) => {
+    setOptimizationError(null);
+    setOptimizationRunning(true);
+    setOptimizationResults([]);
+
+    try {
+      const response = await fetch(`${config.api.baseUrl}/start_optimization`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          iterations,
+          ticker_filters: {
+            ticker_count: tickerCount,
+            selected_tickers: selectedTickers.length > 0 ? selectedTickers : null
+          },
+          date_filters: startDate || endDate ? {
+            start_date: startDate || null,
+            end_date: endDate || null
+          } : null,
+          nav_settings: navSettings
+        })
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setOptimizationRunId(data.run_id);
+        // Start polling for status
+        pollOptimizationStatus(data.run_id);
+        setActiveTab(TAB_NAMES.OPTIMIZE);
+      } else {
+        setOptimizationError(data.error || 'Failed to start optimization');
+        setOptimizationRunning(false);
+      }
+    } catch (error) {
+      setOptimizationError(`Failed to start optimization: ${error.message}`);
+      setOptimizationRunning(false);
+    }
+  };
+
+  const pollOptimizationStatus = (runId) => {
+    const interval = setInterval(async () => {
+      try {
+        const statusResponse = await fetch(`${config.api.baseUrl}/optimization_status/${runId}`);
+        const statusData = await statusResponse.json();
+
+        if (statusData.status === 'not_found') {
+          clearInterval(interval);
+          setOptimizationError('Optimization run not found');
+          setOptimizationRunning(false);
+          return;
+        }
+
+        setOptimizationStatus(statusData);
+
+        // Fetch results
+        const resultsResponse = await fetch(`${config.api.baseUrl}/optimization_results/${runId}`);
+        const resultsData = await resultsResponse.json();
+
+        if (resultsData.success) {
+          setOptimizationResults(resultsData.results);
+        }
+
+        // Check if completed
+        if (statusData.status === 'completed' || statusData.is_stopped) {
+          clearInterval(interval);
+          setOptimizationRunning(false);
+        }
+      } catch (error) {
+        console.error('Error polling optimization status:', error);
+      }
+    }, config.optimization.pollingInterval);
+
+    // Store interval ID for cleanup
+    return interval;
+  };
+
+  const stopOptimization = async () => {
+    if (!optimizationRunId) return;
+
+    try {
+      await fetch(`${config.api.baseUrl}/stop_optimization/${optimizationRunId}`, {
+        method: 'POST'
+      });
+      // Status will be updated by the polling interval
+    } catch (error) {
+      console.error('Error stopping optimization:', error);
+    }
+  };
+
+  const useStrategy = (result) => {
+    // Copy the main prompt to the input field
+    setPrompt(result.main_prompt);
+    setConditionPrompt(result.condition_prompt);
+    setActiveTab(TAB_NAMES.RESULTS);
+    showToastNotification('Strategy copied! You can now run it.');
+  };
+
   const handlePageChange = (newPage) => {
     if (newPage >= 1 && newPage <= totalPages) {
       fetchDatabaseData(newPage);
@@ -708,34 +817,41 @@ function App() {
             setShowProcessingStatus={setShowProcessingStatus}
           />
 
-          {result && (
-            <div className="results-section">
-              <div className="results-tabs">
-                <button 
+          <div className="results-section">
+            <div className="results-tabs">
+              {result && (
+                <button
                   className={`tab-btn ${activeTab === TAB_NAMES.RESULTS ? 'active' : ''}`}
                   onClick={() => setActiveTab(TAB_NAMES.RESULTS)}
                 >
                   📊 Main Results
                 </button>
-                {conditionResult && (
-                  <button 
-                    className={`tab-btn ${activeTab === TAB_NAMES.CONDITION ? 'active' : ''}`}
-                    onClick={() => setActiveTab(TAB_NAMES.CONDITION)}
-                  >
-                    🔍 Condition Results
-                  </button>
-                )}
-                {conditionResult && (
-                  <button 
-                    className={`tab-btn ${activeTab === TAB_NAMES.NAV ? 'active' : ''}`}
-                    onClick={() => setActiveTab(TAB_NAMES.NAV)}
-                  >
-                    📈 NAV Analysis
-                  </button>
-                )}
-              </div>
-              
-              {activeTab === TAB_NAMES.RESULTS && (
+              )}
+              {conditionResult && (
+                <button
+                  className={`tab-btn ${activeTab === TAB_NAMES.CONDITION ? 'active' : ''}`}
+                  onClick={() => setActiveTab(TAB_NAMES.CONDITION)}
+                >
+                  🔍 Condition Results
+                </button>
+              )}
+              {conditionResult && (
+                <button
+                  className={`tab-btn ${activeTab === TAB_NAMES.NAV ? 'active' : ''}`}
+                  onClick={() => setActiveTab(TAB_NAMES.NAV)}
+                >
+                  📈 NAV Analysis
+                </button>
+              )}
+              <button
+                className={`tab-btn ${activeTab === TAB_NAMES.OPTIMIZE ? 'active' : ''}`}
+                onClick={() => setActiveTab(TAB_NAMES.OPTIMIZE)}
+              >
+                🤖 Auto Optimize
+              </button>
+            </div>
+
+              {activeTab === TAB_NAMES.RESULTS && result && (
                 <div className="tab-content">
                   {result.error ? (
                     <div className="error">
@@ -1117,8 +1233,32 @@ function App() {
                   </div>
                 </div>
               )}
-            </div>
-          )}
+
+              {activeTab === TAB_NAMES.OPTIMIZE && (
+                <div className="tab-content optimize-tab-content">
+                  <OptimizationPanel
+                    onStartOptimization={startOptimization}
+                    isRunning={optimizationRunning}
+                    currentStatus={optimizationStatus}
+                    onStopOptimization={stopOptimization}
+                  />
+
+                  {optimizationError && (
+                    <div className="error">
+                      <h4>Optimization Error</h4>
+                      <p>{optimizationError}</p>
+                    </div>
+                  )}
+
+                  {optimizationResults.length > 0 && (
+                    <StrategyResultsTable
+                      results={optimizationResults}
+                      onUseStrategy={useStrategy}
+                    />
+                  )}
+                </div>
+              )}
+          </div>
         </div>
 
         <div className="right-panel">

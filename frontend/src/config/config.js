@@ -35,7 +35,8 @@ const config = {
   tabs: {
     RESULTS: 'results',
     CONDITION: 'condition',
-    NAV: 'nav'
+    NAV: 'nav',
+    OPTIMIZE: 'optimize'
   },
   
   // NAV settings
@@ -56,6 +57,14 @@ const config = {
       minTraderCost: 0,
       maxTraderCost: 100
     }
+  },
+
+  // Optimization settings
+  optimization: {
+    defaultIterations: 10,
+    maxIterations: 50,
+    minIterations: 1,
+    pollingInterval: 2000  // Poll status every 2 seconds
   },
   
   // UI settings
