@@ -410,52 +410,48 @@ function App() {
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      let buffer = '';
 
-      let shouldBreak = false;
-      while (true && !shouldBreak) {
+      while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
+        buffer += decoder.decode(value, { stream: true });
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
+        let boundary;
+        while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+          const fullEvent = buffer.slice(0, boundary).trim();
+          buffer = buffer.slice(boundary + 2);
+
+          if (fullEvent.startsWith('data:')) {
+            const jsonStr = fullEvent.slice(5).trim();
             try {
-              const data = JSON.parse(line.slice(6));
-              
+              const data = JSON.parse(jsonStr);
+
               setStatusMessages(prev => [...prev, data]);
-              console.log(data)
+
               if (data.type === 'final_result') {
                 setResult(data.data);
                 setIsStreaming(false);
                 setCanStop(false);
-                setTimeout(() => {
-                  setShowProcessingStatus(false);
-                }, 2000);
+                setTimeout(() => setShowProcessingStatus(false), 2000);
               } else if (data.type === 'final_error') {
                 setResult({ error: data.message });
                 setIsStreaming(false);
                 setCanStop(false);
-                setTimeout(() => {
-                  setShowProcessingStatus(false);
-                }, 3000);
+                setTimeout(() => setShowProcessingStatus(false), 3000);
               } else if (data.type === 'connection_close') {
-                // Force close SSE connection
                 console.log('SSE connection close signal received');
-                shouldBreak = true;
-                setTimeout(() => {
-                  if (controller && !controller.signal.aborted) {
-                    controller.abort();
-                  }
-                }, 100);
+                controller.abort();
+                break;
               }
-            } catch (e) {
-              console.warn('Failed to parse SSE data:', line);
+            } catch (err) {
+              console.warn('Failed to parse full SSE event:', jsonStr);
             }
           }
         }
       }
+
     } catch (error) {
       if (error.name === 'AbortError') {
         console.log('Request was aborted');
