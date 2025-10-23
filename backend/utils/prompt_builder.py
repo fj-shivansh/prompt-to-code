@@ -107,6 +107,12 @@ CRITICAL REQUIREMENTS:
 
 ⚠️ PANDAS FILLNA REQUIREMENT: DO NOT use df['column'].fillna(value, inplace=True). Instead use: df['column'] = df['column'].fillna(value)
 
+⚠️ PANDAS GROUPBY/ROLLING/EMA NOTE: 
+When using groupby with rolling() or ewm(), reset index if necessary to align results with the original DataFrame: 
+df['New_Column'] = df.groupby('Ticker')['Adj_Close'].rolling(window=20).mean().reset_index(level=0, drop=True)
+Always sort by ['Ticker', 'Date'] ascending BEFORE any groupby calculations.
+
+
 CODE REQUIREMENTS:
 - Complete standalone Python code
 - MUST use sqlite3.connect() to load real database data
@@ -141,7 +147,6 @@ df = df[output_columns]
 # Step 7: Save to CSV
 df.to_csv('{output_file}', index=False)
 ```
-
 Return JSON format:
 {{
     "code": "complete Python code as string",

@@ -313,15 +313,6 @@ class StrategyOptimizer:
         output_file = os.path.join(project_root, f"output_opt_iter{iteration}.csv")
 
         try:
-            # Step 1: Refine the generated strategy prompt
-            if self.prompt_refiner:
-                print(f"   → Refining strategy prompt...")
-                refined_prompt = self.prompt_refiner.refine_prompt(prompt)
-                print(f"   → Prompt refined successfully")
-            else:
-                print(f"   ⚠️  No prompt refiner available, using original prompt")
-                refined_prompt = prompt
-
             # Step 2: Build filters dictionary for parallel processing
             filters = {}
             if ticker_filters:
@@ -333,7 +324,7 @@ class StrategyOptimizer:
             if self.system:
                 print(f"   → Running parallel processing with 2 LLMs...")
                 result = self.system.parallel_process_generic(
-                    refined_prompt,
+                    prompt,
                     task_type="prompt",
                     max_complete_restarts=1,
                     max_error_attempts=2,
@@ -359,7 +350,7 @@ class StrategyOptimizer:
                 # Fallback to old method if system not available
                 print(f"   ⚠️  SystemOrchestrator not available, using direct generation")
                 generation = self.gemini_client.generate_code(
-                    task=refined_prompt,
+                    task=prompt,
                     output_file=f"output_opt_iter{iteration}.csv",
                     ticker_filters=ticker_filters,
                     date_filters=date_filters
