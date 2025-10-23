@@ -7,7 +7,7 @@ import pandas as pd
 import uuid
 from typing import Dict, Optional, List
 from ..database.strategy_db import StrategyDatabase
-from ..utils.strategy_generation_prompt import build_initial_strategy_prompt, build_improvement_prompt
+from ..utils.strategy_generation_prompt import build_combined_strategy_prompt, build_improved_combined_prompt
 from ..utils.condition_generation_prompt import build_auto_condition_prompt
 from ..services.gemini_client import GeminiClient
 from ..services.code_executor import CodeExecutor
@@ -152,7 +152,9 @@ class StrategyOptimizer:
             try:
                 # Step 1: Generate main strategy prompt
                 print(f"\n[{iteration}] Step 1: Generating strategy prompt (attempt {attempt + 1}/{max_retries})...")
-                main_prompt = self._generate_main_prompt(run_id, iteration)
+                prompts = self._generate_main_prompt(run_id, iteration)
+                print(prompts)
+                main_prompt = prompts["main_prompt"]
                 print(f"Generated prompt: {main_prompt[:200]}...")
 
                 # Step 2: Generate and execute main code
@@ -168,7 +170,7 @@ class StrategyOptimizer:
 
                 # Step 3: Generate condition prompt
                 print(f"[{iteration}] Step 3: Generating condition prompt...")
-                condition_prompt = self._generate_condition_prompt(iteration)
+                condition_prompt = prompts["condition_prompt"]
                 print(f"Condition prompt: {condition_prompt[:150]}...")
 
                 # Step 4: Generate and execute condition code
@@ -233,26 +235,43 @@ class StrategyOptimizer:
         # Should not reach here
         return {'iteration': iteration, 'status': 'failed', 'error_message': 'Unknown error'}
 
-    def _generate_main_prompt(self, run_id: str, iteration: int) -> str:
-        """Generate strategy prompt using Gemini"""
+
+    def _generate_main_prompt(self, run_id: str, iteration: int) -> dict:
+        """Generate strategy prompt using Gemini and return structured prompts"""
+        import json
+        import re
         if iteration == 1:
-            # First iteration - start from scratch
-            meta_prompt = build_initial_strategy_prompt()
+            meta_prompt = build_combined_strategy_prompt()
         else:
-            # Get history and generate improvement
             history = self.strategy_db.get_run_history_for_prompt(run_id, max_items=5)
-            meta_prompt = build_improvement_prompt(history)
+            meta_prompt = build_improved_combined_prompt(history)
 
-        # Call Gemini to generate the actual trading strategy prompt
+        # Call Gemini (old SDK, cannot use config)
         response = self.gemini_client.model.generate_content(meta_prompt)
-        strategy_prompt = response.text.strip()
+        text = response.text.strip()
 
-        # Clean up any markdown formatting
-        if strategy_prompt.startswith('```'):
-            lines = strategy_prompt.split('\n')
-            strategy_prompt = '\n'.join(lines[1:-1])
+        # Remove "json" prefix if present
+        if text.lower().startswith("json"):
+            text = text[len("json"):].strip()
 
-        return strategy_prompt
+        # Remove markdown code blocks ``` or ```json
+        text = re.sub(r"^```json|^```|```$", "", text, flags=re.MULTILINE).strip()
+
+        # Try parsing JSON
+        try:
+            prompts = json.loads(text)
+        except json.JSONDecodeError:
+            # Optional: auto-fix common issues (e.g., single quotes)
+            text_fixed = text.replace("'", '"')
+            prompts = json.loads(text_fixed)
+
+        # Ensure keys exist
+        main_prompt = prompts.get("main_prompt", "")
+        condition_prompt = prompts.get("condition_prompt", "")
+        return {
+            "main_prompt": main_prompt,
+            "condition_prompt": condition_prompt
+        }
 
     def _generate_condition_prompt(self, iteration: int) -> str:
         """Generate condition prompt based on output.csv columns"""
