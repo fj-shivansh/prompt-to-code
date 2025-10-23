@@ -425,7 +425,7 @@ function App() {
               const data = JSON.parse(line.slice(6));
               
               setStatusMessages(prev => [...prev, data]);
-              
+              console.log(data)
               if (data.type === 'final_result') {
                 setResult(data.data);
                 setIsStreaming(false);
