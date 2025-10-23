@@ -49,6 +49,9 @@ class NAVCalculator:
                 percentage_of_each_ticker = min(percentage_of_each_ticker, max_position_each_ticker)
                 avg_forward_gain = total_forward_gain * percentage_of_each_ticker
 
+                # Convert percentage to decimal (e.g., 5.0 -> 0.05)
+                avg_forward_gain = avg_forward_gain / 100
+
                 # Calculate trading costs
                 # For each signal: 2 trades (buy + sell), but we deduct cost only once per position
                 # Since we're trading count tickers, we have count round-trip trades

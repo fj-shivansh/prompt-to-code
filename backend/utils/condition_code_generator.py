@@ -12,18 +12,19 @@ def generate_condition_code(condition_prompt: str, system, output_file: str = "c
     csv_headers = ""
     actual_columns = []
 
-    # EVERYTHING RUNS IN BACKEND FOLDER - READ FROM BACKEND!
+    # Files can be in PROJECT ROOT (normal flow) or BACKEND (other flows)
     current_dir = os.getcwd()
     print(f"Current working directory: {current_dir}")
 
-    # Calculate backend directory
+    # Calculate backend directory and project root
     backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    project_root = os.path.dirname(backend_dir)
 
     possible_paths = [
-        os.path.join(backend_dir, 'output.csv'),  # BACKEND FOLDER - HIGHEST PRIORITY!
-        os.path.abspath('./output.csv'),
-        os.path.abspath('output.csv'),
-        os.path.join(current_dir, 'output.csv')
+        os.path.join(project_root, 'output.csv'),  # PROJECT ROOT - normal flow creates files here!
+        os.path.join(current_dir, 'output.csv'),   # Current working directory
+        os.path.abspath('output.csv'),             # Relative to CWD
+        os.path.join(backend_dir, 'output.csv')    # Backend folder (fallback)
     ]
 
     print(f"Will try these paths for output.csv:")

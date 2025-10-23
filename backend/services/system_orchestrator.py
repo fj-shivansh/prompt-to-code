@@ -456,16 +456,25 @@ class PromptToCodeSystem:
             }
 
     def copy_to_output_csv(self, source_file: str, destination_file: str = "output.csv"):
-        """Copy the selected CSV to the specified output file"""
+        """Copy the selected CSV to the specified output file in BOTH backend and project root"""
         import shutil
         try:
             if os.path.exists(source_file):
-                shutil.copy2(source_file, destination_file)
-                print(f"Copied {source_file} to {destination_file}")
+                # Hardcoded paths - copy to BOTH locations
+                project_root_path = f"../{destination_file}"
+                backend_path = f"{destination_file}"
+
+                # Copy to project root (one level up)
+                shutil.copy2(source_file, project_root_path)
+                print(f"Copied {source_file} to {project_root_path}")
+
+                # Copy to backend folder (current directory)
+                shutil.copy2(source_file, backend_path)
+                print(f"Copied {source_file} to {backend_path}")
             else:
-                print(f"Warning: {source_file} not found, cannot copy to {destination_file}")
+                print(f"Warning: {source_file} not found, cannot copy")
         except Exception as e:
-            print(f"Error copying {source_file} to {destination_file}: {str(e)}")
+            print(f"Error copying {source_file}: {str(e)}")
 
     def compare_csv_files(self) -> Dict[str, Any]:
         """Compare the two generated CSV files"""
